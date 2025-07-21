@@ -126,11 +126,11 @@ class PerspectiveTypeMode(Config):
         title = "Perspective Type"
 
 
-class PackageInputs(Inputs):
+class PerspectiveTransformationInputs(Inputs):
     inputImage: InputImage
 
 
-class PackageConfigs(Configs):
+class PerspectiveTransformationConfigs(Configs):
     PerspectiveTypeMode:PerspectiveTypeMode
     drawBBox: KeepSideBBox
     outputWidth: OutputWidth
@@ -138,13 +138,13 @@ class PackageConfigs(Configs):
 
 
 
-class PackageOutputs(Outputs):
+class PerspectiveTransformationOutputs(Outputs):
     outputImage: OutputImage
 
 
-class PackageRequest(Request):
-    inputs: Optional[PackageInputs]
-    configs: PackageConfigs
+class PerspectiveTransformationRequest(Request):
+    inputs: Optional[PerspectiveTransformationInputs]
+    configs: PerspectiveTransformationConfigs
 
     class Config:
         json_schema_extra = {
@@ -152,18 +152,18 @@ class PackageRequest(Request):
         }
 
 
-class PackageResponse(Response):
-    outputs: PackageOutputs
+class PerspectiveTranformationResponse(Response):
+    outputs: PerspectiveTransformationOutputs
 
 
-class PackageExecutor(Config):
-    name: Literal["Package"] = "Package"
-    value: Union[PackageRequest, PackageResponse]
+class PerspectiveTransformationExecutor(Config):
+    name: Literal["PerspectiveTranformation "] = "PerspectiveTranformation "
+    value: Union[PerspectiveTransformationRequest, PerspectiveTranformationResponse]
     type: Literal["object"] = "object"
     field: Literal["option"] = "option"
 
     class Config:
-        title = "Package"
+        title = "PerspectiveTranformation "
         json_schema_extra = {
             "target": {
                 "value": 0
@@ -173,7 +173,7 @@ class PackageExecutor(Config):
 
 class ConfigExecutor(Config):
     name: Literal["ConfigExecutor"] = "ConfigExecutor"
-    value: Union[PackageExecutor]
+    value: Union[PerspectiveTransformationExecutor]
     type: Literal["executor"] = "executor"
     field: Literal["dependentDropdownlist"] = "dependentDropdownlist"
 
@@ -190,5 +190,5 @@ class PackageConfigs(Configs):
 
 class PackageModel(Package):
     configs: PackageConfigs
-    type: Literal["component"] = "component"
-    name: Literal["Package"] = "Package"
+    type: Literal["component"] = "component "
+    name: Literal["PerspectiveTranformation "] = "PerspectiveTranformation "
