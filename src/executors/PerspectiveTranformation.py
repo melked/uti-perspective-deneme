@@ -1,3 +1,4 @@
+
 import os
 import sys
 import cv2
@@ -12,10 +13,10 @@ from components.PerspectiveTransformation.src.utils.response import build_respon
 from components.PerspectiveTransformation.src.models.PackageModel import PackageModel
 
 
-class PerspectiveTransformation(Component):
+class Package(Component):
     def __init__(self, request, bootstrap):
         super().__init__(request, bootstrap)
-        self.request.model = PackageModel(**self.request.data)
+        self.request.model = PackageModel(**(self.request.data))
 
         self.perspective_mode = self.request.get_param("PhotoTypeMode") or "Auto"
         self.keep_side = self.request.get_param("KeepSide") or False
