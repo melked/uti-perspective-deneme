@@ -27,9 +27,9 @@ class PerspectiveTransformation(Component):
     def bootstrap(config: dict) -> dict:
         return {}
 
-    def _preprocess_image(self, img: np.ndarray) -> np.ndarray:
+    def _prepare_image(self, img: np.ndarray):
         """
-        Görüntüyü Canny için uygun hale getirir (uint8, 3 kanal).
+        Görüntüyü OpenCV işlemleri için uygun hale getirir.
         """
         if img is None or img.size == 0:
             raise ValueError("Input image is empty or None.")
@@ -37,10 +37,10 @@ class PerspectiveTransformation(Component):
         if img.dtype != np.uint8:
             img = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
 
-        if len(img.shape) == 2:
+        if len(img.shape) == 2:  # grayscale ise
             img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
 
-        if img.shape[-1] == 4:
+        if img.shape[-1] == 4:  # RGBA ise
             img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
 
         return img
@@ -49,7 +49,7 @@ class PerspectiveTransformation(Component):
         """
         Görüntüde en büyük dörtgen alanı bulur ve köşe noktalarını döndürür.
         """
-        img = self._preprocess_image(img)
+        img = self._prepare_image(img)
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         gray = cv2.GaussianBlur(gray, (5, 5), 0)
         edged = cv2.Canny(gray, 75, 200)
@@ -81,7 +81,6 @@ class PerspectiveTransformation(Component):
 
     def run(self):
         img = Image.get_frame(img=self.image, redis_db=self.redis_db)
-
         if img is None or img.value is None:
             raise ValueError("No input image provided or failed to load.")
 
