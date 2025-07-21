@@ -152,18 +152,18 @@ class PerspectiveTransformationRequest(Request):
         }
 
 
-class PerspectiveTranformationResponse(Response):
+class PerspectiveTransformationResponse(Response):
     outputs: PerspectiveTransformationOutputs
 
 
 class PerspectiveTransformationExecutor(Config):
-    name: Literal["PerspectiveTranformation "] = "PerspectiveTranformation "
-    value: Union[PerspectiveTransformationRequest, PerspectiveTranformationResponse]
+    name: Literal["PerspectiveTransformation"] = "PerspectiveTransformation"
+    value: Union[PerspectiveTransformationRequest, PerspectiveTransformationResponse]
     type: Literal["object"] = "object"
     field: Literal["option"] = "option"
 
     class Config:
-        title = "PerspectiveTranformation "
+        title = "PerspectiveTransformation"
         json_schema_extra = {
             "target": {
                 "value": 0
@@ -191,4 +191,4 @@ class PackageConfigs(Configs):
 class PackageModel(Package):
     configs: PackageConfigs
     type: Literal["component"] = "component "
-    name: Literal["PerspectiveTranformation "] = "PerspectiveTranformation "
+    name: Literal["PerspectiveTransformation"] = "PerspectiveTransformation"
