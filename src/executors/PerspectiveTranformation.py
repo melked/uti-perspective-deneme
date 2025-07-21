@@ -1,4 +1,3 @@
-
 import os
 import sys
 import cv2
@@ -13,7 +12,7 @@ from components.PerspectiveTransformation.src.utils.response import build_respon
 from components.PerspectiveTransformation.src.models.PackageModel import PackageModel
 
 
-class Package(Component):
+class PerspectiveTransformation(Component):
     def __init__(self, request, bootstrap):
         super().__init__(request, bootstrap)
         self.request.model = PackageModel(**(self.request.data))
@@ -28,10 +27,29 @@ class Package(Component):
     def bootstrap(config: dict) -> dict:
         return {}
 
+    def _preprocess_image(self, img: np.ndarray) -> np.ndarray:
+        """
+        Görüntüyü Canny için uygun hale getirir (uint8, 3 kanal).
+        """
+        if img is None or img.size == 0:
+            raise ValueError("Input image is empty or None.")
+
+        if img.dtype != np.uint8:
+            img = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+
+        if len(img.shape) == 2:
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+
+        if img.shape[-1] == 4:
+            img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+
+        return img
+
     def _auto_detect_corners(self, img: np.ndarray):
         """
         Görüntüde en büyük dörtgen alanı bulur ve köşe noktalarını döndürür.
         """
+        img = self._preprocess_image(img)
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         gray = cv2.GaussianBlur(gray, (5, 5), 0)
         edged = cv2.Canny(gray, 75, 200)
@@ -63,6 +81,10 @@ class Package(Component):
 
     def run(self):
         img = Image.get_frame(img=self.image, redis_db=self.redis_db)
+
+        if img is None or img.value is None:
+            raise ValueError("No input image provided or failed to load.")
+
         img.value = self._apply_perspective(img.value)
         self.image = Image.set_frame(img=img, package_uID=self.uID, redis_db=self.redis_db)
 
