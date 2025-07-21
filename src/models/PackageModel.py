@@ -37,6 +37,38 @@ class OutputImage(Output):
     class Config:
         title = "Image"
 
+class KeepSideFalse(Config):
+    name: Literal["False"] = "False"
+    value: Literal[False] = False
+    type: Literal["bool"] = "bool"
+    field: Literal["option"] = "option"
+
+    class Config:
+        title = "Disable"
+
+
+class KeepSideTrue(Config):
+    name: Literal["True"] = "True"
+    value: Literal[True] = True
+    type: Literal["bool"] = "bool"
+    field: Literal["option"] = "option"
+
+    class Config:
+        title = "Enable"
+
+
+class KeepSideBBox(Config):
+    """
+       output olculeri icin.
+    """
+    name: Literal["KeepSide"] = "KeepSide"
+    value: Union[KeepSideTrue, KeepSideFalse]
+    type: Literal["object"] = "object"
+    field: Literal["dropdownlist"] = "dropdownlist"
+
+    class Config:
+        title = "Keep Sides"
+
 
 class AutoPerspective(Config):
 
@@ -55,7 +87,7 @@ class AdvancedPerspective(Config):
     type: Literal["string"] = "string"
     field: Literal["option"] = "option"
     class Config:
-        title = "Cartoon"
+        title = "Advanced"
 
 
 
