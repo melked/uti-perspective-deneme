@@ -69,6 +69,32 @@ class KeepSideBBox(Config):
     class Config:
         title = "Keep Sides"
 
+class OutputWidth(Config):
+    """
+    Output image width in pixels.
+    Minimum 100, maximum 4096.
+    """
+    name: Literal["OutputWidth"] = "OutputWidth"
+    value: int = Field(default=800, ge=100, le=4096)
+    type: Literal["number"] = "number"
+    field: Literal["textInput"] = "textInput"
+
+    class Config:
+        title = "Output Width (px)"
+
+
+class OutputHeight(Config):
+    """
+    Output image height in pixels.
+    Minimum 100, maximum 4096.
+    """
+    name: Literal["OutputHeight"] = "OutputHeight"
+    value: int = Field(default=600, ge=100, le=4096)
+    type: Literal["number"] = "number"
+    field: Literal["textInput"] = "textInput"
+
+    class Config:
+        title = "Output Height (px)"
 
 class AutoPerspective(Config):
 
