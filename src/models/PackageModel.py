@@ -132,9 +132,10 @@ class PackageInputs(Inputs):
 
 class PackageConfigs(Configs):
     PerspectiveTypeMode:PerspectiveTypeMode
+    drawBBox: KeepSideBBox
     outputWidth: OutputWidth
     outputHeight: OutputHeight
-    drawBBox: KeepSideBBox
+
 
 
 class PackageOutputs(Outputs):
