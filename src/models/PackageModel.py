@@ -38,51 +38,34 @@ class OutputImage(Output):
         title = "Image"
 
 
-class KeepSideFalse(Config):
-    name: Literal["False"] = "False"
-    value: Literal[False] = False
-    type: Literal["bool"] = "bool"
+class AutoPerspective(Config):
+
+    name: Literal["Auto"] = "Auto"
+    value: str = Field(default="Auto")
+    type: Literal["string"] = "string"
     field: Literal["option"] = "option"
-
     class Config:
-        title = "Disable"
+        title = "Auto"
 
 
-class KeepSideTrue(Config):
-    name: Literal["True"] = "True"
-    value: Literal[True] = True
-    type: Literal["bool"] = "bool"
+class AdvancedPerspective(Config):
+
+    name: Literal["Advanced"] = "Advanced"
+    value: str = Field(default="Advanced")
+    type: Literal["string"] = "string"
     field: Literal["option"] = "option"
-
     class Config:
-        title = "Enable"
+        title = "Cartoon"
 
 
-class KeepSideBBox(Config):
-    """
-        Rotate image without catting off sides.
-    """
-    name: Literal["KeepSide"] = "KeepSide"
-    value: Union[KeepSideTrue, KeepSideFalse]
+
+class PerspectiveTypeMode(Config):
+    name: Literal["PhotoTypeMode"] = "PhotoTypeMode"
+    value: Union[AutoPerspective,AdvancedPerspective]
     type: Literal["object"] = "object"
-    field: Literal["dropdownlist"] = "dropdownlist"
-
+    field: Literal["dependentDropdownlist"] = "dependentDropdownlist"
     class Config:
-        title = "Keep Sides"
-
-
-class Degree(Config):
-    """
-        Positive angles specify counterclockwise rotation while negative angles indicate clockwise rotation.
-    """
-    name: Literal["Degree"] = "Degree"
-    value: int = Field(ge=-359.0, le=359.0,default=0)
-    type: Literal["number"] = "number"
-    field: Literal["textInput"] = "textInput"
-    placeHolder: Literal["[-359, 359]"] = "[-359, 359]"
-
-    class Config:
-        title = "Angle"
+        title = "Perspective Type"
 
 
 class PackageInputs(Inputs):
@@ -90,8 +73,7 @@ class PackageInputs(Inputs):
 
 
 class PackageConfigs(Configs):
-    degree: Degree
-    drawBBox: KeepSideBBox
+    PerspectiveTypeMode:PerspectiveTypeMode
 
 
 class PackageOutputs(Outputs):
