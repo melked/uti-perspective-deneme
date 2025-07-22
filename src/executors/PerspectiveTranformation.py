@@ -49,54 +49,47 @@ def _four_point_transform(image: np.ndarray, pts: np.ndarray) -> np.ndarray:
     return warped
 
 
-def _detect_grid_corners(image: np.ndarray) -> Optional[np.ndarray]:
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    corners = cv2.goodFeaturesToTrack(gray, maxCorners=100, qualityLevel=0.01, minDistance=10)
-    if corners is None or len(corners) < 4:
-        return None
+def _score_contour_brightness(contour: np.ndarray, image: np.ndarray, img_area: float) -> float:
+    area = cv2.contourArea(contour)
+    if area < img_area * 0.01:
+        return -1
 
-    corners = np.int0(corners).reshape(-1, 2)
-    hull = cv2.convexHull(corners)
-
-    peri = cv2.arcLength(hull, True)
-    approx = cv2.approxPolyDP(hull, 0.02 * peri, True)
-    if len(approx) == 4:
-        return approx.reshape(4, 2)
-    return None
+    return area / img_area
 
 
 def _auto_detect_document_corners(image: np.ndarray) -> np.ndarray:
-
-    grid_pts = _detect_grid_corners(image)
-    if grid_pts is not None:
-        return grid_pts
-
-    img_area = image.shape[0] * image.shape[1]
-    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    lower_white = np.array([0, 0, 180])
-    upper_white = np.array([180, 50, 255])
-    mask_white = cv2.inRange(hsv, lower_white, upper_white)
-
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (5, 5), 0)
-    thresh = cv2.adaptiveThreshold(
-        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY, 11, 2
-    )
-    combined = cv2.bitwise_or(thresh, mask_white)
-    edges = cv2.Canny(combined, 50, 200)
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
 
-    contours, _ = cv2.findContours(edges.copy(), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    thresh = cv2.adaptiveThreshold(
+        blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY_INV, 11, 2
+    )
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    morph = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+    morph = cv2.morphologyEx(morph, cv2.MORPH_OPEN, kernel)
+
+    contours, _ = cv2.findContours(morph.copy(), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
     contours = sorted(contours, key=cv2.contourArea, reverse=True)
 
-    for c in contours:
-        peri = cv2.arcLength(c, True)
-        approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-        if len(approx) == 4:
-            return approx.reshape(4, 2)
+    img_area = image.shape[0] * image.shape[1]
+    best_score = -1
+    best_quad = None
 
-    h, w = image.shape[:2]
-    return np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], dtype=np.float32)
+    for c in contours:
+        score = _score_contour_brightness(c, image, img_area)
+        if score > best_score:
+            peri = cv2.arcLength(c, True)
+            approx = cv2.approxPolyDP(c, 0.02 * peri, True)
+            if len(approx) == 4:
+                best_score = score
+                best_quad = approx.reshape(4, 2)
+
+    if best_quad is None:
+        h, w = image.shape[:2]
+        return np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], dtype=np.float32)
+    return best_quad
 
 
 class PerspectiveTransformation(Component):
