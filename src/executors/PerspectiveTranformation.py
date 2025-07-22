@@ -65,6 +65,7 @@ class PerspectiveTransformation(Component):
 
     def __init__(self, request, bootstrap):
         super().__init__(request, bootstrap)
+        self.context = {}
         self.request.model = PackageModel(**self.request.data)
 
         self.mode = self.request.get_param("PerspectiveTypeMode") or "Auto"
@@ -75,7 +76,6 @@ class PerspectiveTransformation(Component):
         self.output_height = int(self.request.get_param("OutputHeight") or 600)
         self.image = self.request.get_param("inputImage")
 
-        # --- Roboflow tarzı ek parametreler ---
         self.raw_polygons = self.request.get_param("perspective_polygons")
         self.raw_predictions = self.request.get_param("predictions")
         self.warp_image_flag = self._resolve_bool(self.request.get_param("warp_image"))
