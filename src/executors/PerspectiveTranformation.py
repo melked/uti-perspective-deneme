@@ -31,11 +31,11 @@ def _four_point_transform(image: np.ndarray, pts: np.ndarray) -> np.ndarray:
 
     widthA = np.linalg.norm(br - bl)
     widthB = np.linalg.norm(tr - tl)
-    maxWidth = max(int(widthA), int(widthB))
+    maxWidth = int(round(max(widthA, widthB)))
 
     heightA = np.linalg.norm(tr - br)
     heightB = np.linalg.norm(tl - bl)
-    maxHeight = max(int(heightA), int(heightB))
+    maxHeight = int(round(max(heightA, heightB)))
 
     dst = np.array([
         [0, 0],
@@ -45,51 +45,97 @@ def _four_point_transform(image: np.ndarray, pts: np.ndarray) -> np.ndarray:
     ], dtype=np.float32)
 
     M = cv2.getPerspectiveTransform(rect, dst)
-    warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight))
+
+    warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight), flags=cv2.INTER_LANCZOS4)
+
     return warped
 
 
-def _score_contour_brightness(contour: np.ndarray, image: np.ndarray, img_area: float) -> float:
-    area = cv2.contourArea(contour)
-    if area < img_area * 0.01:
-        return -1
 
-    return area / img_area
+def _auto_detect_document_corners_sharpen_adaptive(image: np.ndarray) -> np.ndarray:
 
-
-def _auto_detect_document_corners(image: np.ndarray) -> np.ndarray:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    blur = cv2.GaussianBlur(gray, (5, 5), 0)
 
+    blur = cv2.bilateralFilter(gray, d=9, sigmaColor=75, sigmaSpace=75)
+
+    sharpen_kernel = np.array([[0, -1, 0],
+                               [-1, 5, -1],
+                               [0, -1, 0]])
+    sharpened = cv2.filter2D(blur, -1, sharpen_kernel)
+
+    # 4. Adaptive Threshold
     thresh = cv2.adaptiveThreshold(
-        blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        sharpened, 255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
         cv2.THRESH_BINARY_INV, 11, 2
     )
 
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
     morph = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
     morph = cv2.morphologyEx(morph, cv2.MORPH_OPEN, kernel)
+    contours, _ = cv2.findContours(morph, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
 
-    contours, _ = cv2.findContours(morph.copy(), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-    contours = sorted(contours, key=cv2.contourArea, reverse=True)
-
-    img_area = image.shape[0] * image.shape[1]
-    best_score = -1
-    best_quad = None
-
-    for c in contours:
-        score = _score_contour_brightness(c, image, img_area)
-        if score > best_score:
-            peri = cv2.arcLength(c, True)
-            approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-            if len(approx) == 4:
-                best_score = score
-                best_quad = approx.reshape(4, 2)
-
-    if best_quad is None:
+    if not contours:
         h, w = image.shape[:2]
         return np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], dtype=np.float32)
-    return best_quad
+
+    contours = sorted(contours, key=cv2.contourArea, reverse=True)
+    img_area = image.shape[0] * image.shape[1]
+    min_area = img_area * 0.01
+
+    for c in contours:
+        if cv2.contourArea(c) < min_area:
+            continue
+        peri = cv2.arcLength(c, True)
+        approx = cv2.approxPolyDP(c, 0.02 * peri, True)
+        if len(approx) == 4 and cv2.isContourConvex(approx):
+            return approx.reshape(4, 2).astype(np.float32)
+
+    h, w = image.shape[:2]
+    return np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], dtype=np.float32)
+
+
+def _auto_detect_document_corners_clahe_canny(image: np.ndarray) -> np.ndarray:
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    clahe_img = clahe.apply(gray)
+
+    edges = cv2.Canny(clahe_img, 30, 150)
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    morph = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+
+    contours, _ = cv2.findContours(morph, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        h, w = image.shape[:2]
+        return np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], dtype=np.float32)
+
+    contours = sorted(contours, key=cv2.contourArea, reverse=True)
+    img_area = image.shape[0] * image.shape[1]
+    min_area = img_area * 0.01
+
+    for c in contours:
+        if cv2.contourArea(c) < min_area:
+            continue
+        peri = cv2.arcLength(c, True)
+        approx = cv2.approxPolyDP(c, 0.02 * peri, True)
+        if len(approx) == 4 and cv2.isContourConvex(approx):
+            return approx.reshape(4, 2).astype(np.float32)
+
+    h, w = image.shape[:2]
+    return np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], dtype=np.float32)
+
+
+def auto_detect_document_corners_dynamic(image: np.ndarray) -> np.ndarray:
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    contrast = gray.max() - gray.min()
+    threshold = 50
+
+    if contrast < threshold:
+        return _auto_detect_document_corners_sharpen_adaptive(image)
+    else:
+        return _auto_detect_document_corners_clahe_canny(image)
 
 
 class PerspectiveTransformation(Component):
@@ -120,7 +166,7 @@ class PerspectiveTransformation(Component):
             raise ValueError("No input image provided or failed to load.")
 
         src_img = self._prepare_image(img_obj.value)
-        pts = _auto_detect_document_corners(src_img)
+        pts = auto_detect_document_corners_dynamic(src_img)
         warped = _four_point_transform(src_img, pts)
 
         img_obj.value = warped
