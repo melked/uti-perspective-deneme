@@ -18,10 +18,10 @@ def _order_points(pts: np.ndarray) -> np.ndarray:
     rect = np.zeros((4, 2), dtype=np.float32)
     s = pts.sum(axis=1)
     diff = np.diff(pts, axis=1)
-    rect[0] = pts[np.argmin(s)]      # Top-left
-    rect[2] = pts[np.argmax(s)]      # Bottom-right
-    rect[1] = pts[np.argmin(diff)]   # Top-right
-    rect[3] = pts[np.argmax(diff)]   # Bottom-left
+    rect[0] = pts[np.argmin(s)]
+    rect[2] = pts[np.argmax(s)]
+    rect[1] = pts[np.argmin(diff)]
+    rect[3] = pts[np.argmax(diff)]
     return rect
 
 
@@ -49,10 +49,43 @@ def _four_point_transform(image: np.ndarray, pts: np.ndarray) -> np.ndarray:
     return warped
 
 
-def _auto_detect_document_corners(image: np.ndarray) -> np.ndarray:
+def _detect_grid_corners(image: np.ndarray) -> Optional[np.ndarray]:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    blur = cv2.GaussianBlur(gray, (5, 5), 0)
-    edges = cv2.Canny(blur, 75, 200)
+    corners = cv2.goodFeaturesToTrack(gray, maxCorners=100, qualityLevel=0.01, minDistance=10)
+    if corners is None or len(corners) < 4:
+        return None
+
+    corners = np.int0(corners).reshape(-1, 2)
+    hull = cv2.convexHull(corners)
+
+    peri = cv2.arcLength(hull, True)
+    approx = cv2.approxPolyDP(hull, 0.02 * peri, True)
+    if len(approx) == 4:
+        return approx.reshape(4, 2)
+    return None
+
+
+def _auto_detect_document_corners(image: np.ndarray) -> np.ndarray:
+
+    grid_pts = _detect_grid_corners(image)
+    if grid_pts is not None:
+        return grid_pts
+
+    img_area = image.shape[0] * image.shape[1]
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    lower_white = np.array([0, 0, 180])
+    upper_white = np.array([180, 50, 255])
+    mask_white = cv2.inRange(hsv, lower_white, upper_white)
+
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)
+    thresh = cv2.adaptiveThreshold(
+        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY, 11, 2
+    )
+    combined = cv2.bitwise_or(thresh, mask_white)
+    edges = cv2.Canny(combined, 50, 200)
+
     contours, _ = cv2.findContours(edges.copy(), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
     contours = sorted(contours, key=cv2.contourArea, reverse=True)
 
@@ -62,7 +95,6 @@ def _auto_detect_document_corners(image: np.ndarray) -> np.ndarray:
         if len(approx) == 4:
             return approx.reshape(4, 2)
 
-    # Dörtgen bulunamazsa tüm resmi döndür
     h, w = image.shape[:2]
     return np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], dtype=np.float32)
 
