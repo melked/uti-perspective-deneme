@@ -822,6 +822,7 @@ def correct_perspective_auto_advanced_detection(img, intermediate=True):
         img.value = warped
         self.image = Image.set_frame(img=img, package_uID=self.uID, redis_db=self.redis_db)
 
+
         # Yanıt için context hazırla
         self.context = {
             "src_quad": src_quad.tolist(),
