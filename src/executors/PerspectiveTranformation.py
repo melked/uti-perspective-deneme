@@ -1,8 +1,12 @@
 import os
 import sys
+from itertools import combinations
+
 import cv2
 import numpy as np
 from typing import Any, Optional, Tuple, List
+
+from tensorflow.python.ops.clustering_ops import KMeans
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../../../"))
 
@@ -12,7 +16,6 @@ from sdks.novavision.src.helper.executor import Executor
 from components.PerspectiveTransformation.src.models.PackageModel import PackageModel
 from components.PerspectiveTransformation.src.utils.response import build_response
 
-# ----- YARDIMCI FONKSİYONLAR -----
 
 def get_intersections(img, lines):
     """Çizgilerin kesişim noktalarını hesaplar"""
@@ -162,7 +165,7 @@ def find_lines_probabilistic_hough(edges, rho=1, theta=np.pi/180, threshold=50, 
     return np.array([], dtype=np.int32)
 
 # Helper to get intersections from line segments (Probabilistic Hough)
-def get_intersections_from_segments(segments, img_shape):
+def get_intersections_from_segments(segments, img_shape, img=None):
     """Çizgi segmentlerinin kesişim noktalarını hesaplar."""
     height, width = img_shape[:2]
     intersections = []
@@ -391,22 +394,22 @@ class PerspectiveTransformation(Component):
 
         # Ön işleme
         if preprocess_method == 'aggressive':
-            preprocessed = preprocess_image_aggressive(img)
+            preprocessed = img.preprocess_image_aggressive(img)
         elif preprocess_method == 'small':
-            preprocessed = preprocess_image_small(img)
+            preprocessed = img.preprocess_image_small(img)
         elif preprocess_method == 'advanced':
-            preprocessed = preprocess_image_advanced(img)
+            preprocessed = img.preprocess_image_advanced(img)
         else: # 'default'
-            preprocessed = preprocess_image(img)
+            preprocessed = img.preprocess_image(img)
 
         if deblur:
-            preprocessed = sharpen_image(preprocessed)
+            preprocessed = img.sharpen_image(preprocessed)
 
         if remove_background:
-            preprocessed = remove_background_grabcut(preprocessed)
+            preprocessed = img.remove_background_grabcut(preprocessed)
 
         if remove_shadows_flag:
-            preprocessed = remove_shadows(preprocessed)
+            preprocessed = img.remove_shadows(preprocessed)
 
 
         gray = cv2.cvtColor(preprocessed, cv2.COLOR_BGR2GRAY)
@@ -796,7 +799,7 @@ class PerspectiveTransformation(Component):
             for i, params in enumerate(tries):
                 print(f"\n🔁 Deneme {i+1}/{len(tries)}: {params}")
                 try:
-                    result = correct_perspective_enhanced(
+                    result = image.correct_perspective_enhanced(
                         image,
                         preprocess_method=params.get("preprocess_method", 'default'),
                         deblur=params.get("deblur", False),
