@@ -3,7 +3,7 @@ import sys
 from itertools import combinations
 import cv2
 import numpy as np
-from sklearn.cluster import KMeans # KMeans için gerekli
+# from sklearn.cluster import KMeans # KMeans için gerekli - Kaldırıldı
 
 # Sistem yolunu güncelleyin
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../../../"))
@@ -105,14 +105,26 @@ def to_cartesian(img, lines):
         cartesian.append((x1, y1, x2, y2))
     return cartesian
 
-def kmeans_corners(points, k=4):
-    """K-means ile fazla köşeleri 4'e indir"""
+def select_outermost_corners(points, k=4):
+    """
+    Verilen noktalardan en dıştaki k (varsayılan 4) köşeyi seçer.
+    K-Means yerine basit geometrik yaklaşımla en uzak noktaları bulur.
+    """
     if len(points) <= k:
-        return points
-    kmeans = KMeans(n_clusters=k, n_init=10, random_state=0) # n_init ve random_state eklendi
-    kmeans.fit(points)
-    centers = kmeans.cluster_centers_
-    return centers.astype(np.float32)
+        return points.astype(np.float32)
+
+    # Noktaların merkezini bul
+    centroid = np.mean(points, axis=0)
+
+    # Merkezden her noktanın uzaklığını hesapla
+    distances = np.linalg.norm(points - centroid, axis=1)
+
+    # En uzak k noktayı seç
+    # Argumenleri azalan sırada sırala ve ilk k indeksi al
+    outermost_indices = np.argsort(distances)[-k:]
+
+    return points[outermost_indices].astype(np.float32)
+
 
 def find_document_contours(img_gray, area_threshold_ratio=0.05):
     contours, _ = cv2.findContours(img_gray, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
@@ -425,8 +437,8 @@ class PerspectiveTransformation(Component):
         if len(intersections) < 4:
             raise ValueError("Yeterli kesişim noktası bulunamadı.")
 
-        # K-means ile köşe sayısını 4'e indir
-        corners = kmeans_corners(intersections, k=4)
+        # K-means yerine select_outermost_corners kullanıldı
+        corners = select_outermost_corners(intersections, k=4)
 
         # Köşeleri sırala
         src_quad = reorder_corners(corners)
