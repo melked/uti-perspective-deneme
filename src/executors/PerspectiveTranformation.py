@@ -877,7 +877,6 @@ class PerspectiveTransformation(Component):
 
             img.value = warped
             self.image = Image.set_frame(img=img, package_uID=self.uID, redis_db=self.redis_db)
-
             self.context = {
                 "src_quad": src_quad.tolist(),
                 "output_size": [out_w, out_h],
