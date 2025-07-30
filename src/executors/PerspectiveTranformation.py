@@ -23,8 +23,8 @@ def order_points(pts):
     rect[0] = pts[np.argmin(s)]  # Sol üst
     rect[2] = pts[np.argmax(s)]  # Sağ alt
     diff = np.diff(pts, axis=1)
-    rect[1] = pts[np.argmin(diff)]  # Sağ üst
-    rect[3] = pts[np.argmax(diff)]  # Sol alt
+    rect[1] = pts[np.argmin(diff)]   # Sağ üst
+    rect[3] = pts[np.argmax(diff)]   # Sol alt
     return rect
 
 def get_intersections(img, lines):
@@ -465,6 +465,9 @@ class PerspectiveTransformation(Component):
         Farklı parametre kombinasyonlarını dener ve başarılı olan ilkini döndürür.
         Orijinal ve negatif görüntü üzerinde denemeler yapar.
         """
+        original_image_error = None
+        negative_image_error = None
+
         def try_all_tries_internal(image_to_process):
             """İç yardımcı fonksiyon: Belirli bir görüntü üzerinde tüm denemeleri yapar."""
             # Denenecek parametre kombinasyonları
@@ -563,12 +566,8 @@ class PerspectiveTransformation(Component):
 
             all_tries = prioritized_tries + broad_tries
 
-            # print(f"Toplam {len(all_tries)} deneme yapılacak (Öncelikli: {len(prioritized_tries)}, Kapsamlı: {len(broad_tries)}).")
-
             for i, params in enumerate(all_tries):
-                # print(f"\n🔁 Deneme {i+1}/{len(all_tries)}: {params}")
                 try:
-                    # _correct_perspective_single_try metodunu çağırın
                     corrected_image, src_quad, output_size = self._correct_perspective_single_try(
                         image_to_process,
                         threshold_max=params.get("threshold_max", 140),
@@ -584,34 +583,35 @@ class PerspectiveTransformation(Component):
                         edge_detector=params.get("edge_detector", 'canny'),
                         blur_method=params.get("blur_method", 'median')
                     )
-                    # print("✅ Başarılı!")
                     return corrected_image, src_quad, output_size
-                except Exception as e:
-                    # print(f"⛔ Deneme {i+1}/{len(all_tries)} başarısız oldu: {e}")
-                    continue
+                except Exception: # Hata mesajını yakala ama bastır
+                    continue # Bir sonraki denemeye geç
             raise RuntimeError("Tüm denemeler başarısız oldu.")
 
-        # print("Orijinal görüntü ile denemeye başlanıyor...")
         try:
             warped, src_quad, output_size = try_all_tries_internal(src_img)
-            # corrected_boxes için bir mantık yoksa şimdilik boş bir liste döndürün
             corrected_boxes = []
             return warped, corrected_boxes, src_quad, output_size
         except RuntimeError as e:
-            # print(f"Orijinal görüntü başarısız: {e}")
-            pass # Hata mesajını bastır, negatif ile denemeye devam et
+            original_image_error = str(e) # Orijinal görüntü denemelerinin hatasını kaydet
+            # print(f"Orijinal görüntü başarısız: {e}") # Bu satır artık yazdırılmayacak
 
-        # print("Negatif görüntü ile denemeye başlanıyor...")
         img_neg = cv2.bitwise_not(src_img)
         try:
             warped, src_quad, output_size = try_all_tries_internal(img_neg)
             corrected_boxes = []
             return warped, corrected_boxes, src_quad, output_size
         except RuntimeError as e:
-            # print(f"Negatif görüntü başarısız: {e}")
-            pass # Hata mesajını bastır
+            negative_image_error = str(e) # Negatif görüntü denemelerinin hatasını kaydet
+            # print(f"Negatif görüntü başarısız: {e}") # Bu satır artık yazdırılmayacak
 
-        raise RuntimeError("Hem orijinal hem negatif görüntüde perspektif düzeltme başarısız oldu.")
+        # Her iki deneme de başarısız olursa, daha açıklayıcı bir hata fırlat
+        error_message = "Perspektif düzeltme hem orijinal hem de negatif görüntüde başarısız oldu."
+        if original_image_error:
+            error_message += f"\nOrijinal görüntü hatası: {original_image_error}"
+        if negative_image_error:
+            error_message += f"\nNegatif görüntü hatası: {negative_image_error}"
+        raise RuntimeError(error_message)
 
 
     def run(self) -> Image:
