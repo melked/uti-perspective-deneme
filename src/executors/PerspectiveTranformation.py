@@ -14,6 +14,24 @@ from components.PerspectiveTransformation.src.models.PackageModel import Package
 from components.PerspectiveTransformation.src.utils.response import build_response
 
 
+
+def order_points(pts):
+    # Noktaları numpy dizisine çevir
+    pts = np.array(pts)
+
+    # Noktaların toplamına göre sol üst ve sağ altı bul
+    s = pts.sum(axis=1)
+    rect = np.zeros((4, 2), dtype="float32")
+    rect[0] = pts[np.argmin(s)]  # Sol üst
+    rect[2] = pts[np.argmax(s)]  # Sağ alt
+
+    # Farklarına göre sağ üst ve sol altı bul
+    diff = np.diff(pts, axis=1)
+    rect[1] = pts[np.argmin(diff)]  # Sağ üst
+    rect[3] = pts[np.argmax(diff)]  # Sol alt
+
+    return rect
+
 def get_intersections(img, lines):
 
     height, width = img.shape[:2]
@@ -100,29 +118,24 @@ def approximate_4_corners(points):
     if len(points) <= 4:
         return points.astype(np.float32)
 
-    # Başlangıç noktası olarak merkez hesapla ve en uzak 4 noktayı al
     center = np.mean(points, axis=0)
     distances = np.linalg.norm(points - center, axis=1)
     idxs = np.argsort(distances)[-4:]
     return points[idxs].astype(np.float32)
 
 def find_document_contours(img_gray, area_threshold_ratio=0.05):
-    """Kontur tespiti ile olası belge kenarlarını bulur."""
-    # Find contours
+
     contours, _ = cv2.findContours(img_gray, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
 
-    # Sort contours by area and keep only the largest ones
     contours = sorted(contours, key=cv2.contourArea, reverse=True)
 
     document_contours = []
     img_area = img_gray.shape[0] * img_gray.shape[1]
 
     for cnt in contours:
-        # Approximate the contour to a polygon
         peri = cv2.arcLength(cnt, True)
         approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
 
-        # If the approximated contour has 4 points and a significant area, consider it a potential document
         if len(approx) == 4 and cv2.contourArea(cnt) > img_area * area_threshold_ratio:
             document_contours.append(approx)
 
@@ -132,7 +145,6 @@ def get_corners_from_contours(contours):
     """Konturlardan köşe noktalarını çıkarır."""
     corners = []
     for contour in contours:
-        # Reshape the contour points to a list of points
         points = contour.reshape(-1, 2)
         corners.extend(points)
     return np.array(corners, dtype=np.float32)
@@ -147,9 +159,6 @@ def detect_corners_shi_tomasi(img_gray, maxCorners=100, qualityLevel=0.01, minDi
 def detect_corners_harris(img_gray, blockSize=2, ksize=3, k=0.04, threshold=0.01):
     """Harris köşe tespit yöntemi"""
     dst = cv2.cornerHarris(img_gray, blockSize, ksize, k)
-    # Result is dilated for marking the corners, not important for the detection itself
-    # dst = cv2.dilate(dst,None)
-    # Threshold for an optimal value, it may vary depending on the image.
     corners = np.argwhere(dst > threshold * dst.max())
     return np.float32(corners).reshape(-1, 2)
 
@@ -157,23 +166,16 @@ def find_lines_probabilistic_hough(edges, rho=1, theta=np.pi/180, threshold=50, 
     """Olasılıksal Hough Dönüşümü ile çizgi segmentlerini bulur."""
     lines = cv2.HoughLinesP(edges, rho, theta, threshold, minLineLength=minLineLength, maxLineGap=maxLineGap)
     if lines is not None:
-        # Reshape to a list of lines (x1, y1, x2, y2)
         return lines.reshape(-1, 4)
     return np.array([], dtype=np.int32)
 
-# Helper to get intersections from line segments (Probabilistic Hough)
 def get_intersections_from_segments(segments, img_shape, img=None):
     """Çizgi segmentlerinin kesişim noktalarını hesaplar."""
     height, width = img_shape[:2]
     intersections = []
-    # Convert segments to line equations or extend them for intersection
-    # A simpler approach is to use the get_intersections function if the segments are long enough
-    # Or extend segments to image boundaries
     extended_lines = []
     for x1, y1, x2, y2 in segments:
-        # Extend the line segment to the image boundaries (conceptual)
-        # This is a simplified approach and might not be accurate for all cases
-        # A more robust method would involve calculating the line equation
+
         if x2 - x1 == 0: # Vertical line
             extended_lines.append((x1, 0, x1, height))
         elif y2 - y1 == 0: # Horizontal line
@@ -442,8 +444,9 @@ class PerspectiveTransformation(Component):
                     if len(lines) >= 4:
                         cartesian = to_cartesian(img, lines)
                         intersections = get_intersections(img, cartesian)
-                        if len(intersections) >= 4:
-                            corners = kmeans_corners(intersections, k=4)
+                        if corners is not None and len(corners) > 4:
+                            corners = approximate_4_corners(corners)
+
                 detection_output_img = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR) # Convert edges to color for display
 
 
@@ -477,7 +480,8 @@ class PerspectiveTransformation(Component):
                 minDistance=shi_tomasi_minDistance
             )
             if corners is not None and len(corners) > 4:
-                corners = kmeans_corners(corners, k=4)
+                corners = approximate_4_corners(corners)
+
             elif corners is not None and len(corners) != 4:
                  corners = None # Ensure exactly 4 corners are found or set to None
 
@@ -499,7 +503,8 @@ class PerspectiveTransformation(Component):
                  threshold=harris_threshold
              )
              if corners is not None and len(corners) > 4:
-                 corners = kmeans_corners(corners, k=4)
+                 corners = approximate_4_corners(corners)
+
              elif corners is not None and len(corners) != 4:
                   corners = None # Ensure exactly 4 corners are found or set to None
 
@@ -542,7 +547,8 @@ class PerspectiveTransformation(Component):
                      # Find intersections from these line segments and then corners
                      intersections_p = get_intersections_from_segments(lines_p, img.shape)
                      if len(intersections_p) >= 4:
-                         corners = kmeans_corners(intersections_p, k=4)
+                         ordered = order_points(np.array(intersections_p[:4]))
+                         center = np.mean(ordered, axis=0)
 
             # Visualize detected lines on the original image for intermediate display
             if lines_p is not None:
@@ -834,6 +840,8 @@ class PerspectiveTransformation(Component):
             img.value = warped
             self.image = Image.set_frame(img=img, package_uID=self.uID, redis_db=self.redis_db)
 
+
+            # Yanıt için context hazırla
             self.context = {
                 "src_quad": src_quad.tolist(),
                 "output_size": [out_w, out_h],
@@ -841,9 +849,6 @@ class PerspectiveTransformation(Component):
                 "keep_side": self.keep_side,
                 "warp_image": self.warp_image_flag,
             }
-
             return build_response(context=self)
-
-
 if __name__ == "__main__":
     Executor(sys.argv[1]).run()
