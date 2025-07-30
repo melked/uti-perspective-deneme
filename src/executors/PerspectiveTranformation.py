@@ -4,7 +4,7 @@ from itertools import combinations
 
 import cv2
 import numpy as np
-
+from tensorflow.python.ops.clustering_ops import KMeans
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../../../"))
 
@@ -96,7 +96,14 @@ def to_cartesian(img, lines):
         cartesian.append((x1, y1, x2, y2))
     return cartesian
 
-
+def kmeans_corners(points, k=4):
+    """K-means ile fazla köşeleri 4'e indir"""
+    if len(points) <= k:
+        return points
+    kmeans = KMeans(n_clusters=k, n_init=10) # Add n_init
+    kmeans.fit(points)
+    centers = kmeans.cluster_centers_
+    return centers.astype(np.float32)
 
 def find_document_contours(img_gray, area_threshold_ratio=0.05):
     """Kontur tespiti ile olası belge kenarlarını bulur."""
@@ -343,11 +350,7 @@ class PerspectiveTransformation(Component):
         return result
 
 
-
-
-    # ----- ANA PERSPEKTİF DÜZELTME FONKSİYONU (Geliştirilmiş) -----
-
-    def correct_perspective_enhanced(img,
+    def correct_perspective_enhanced(self,img,
                                       preprocess_method='default', # 'default', 'aggressive', 'small', 'advanced'
                                       deblur=False,
                                       remove_background=False, # GrabCut
@@ -381,35 +384,33 @@ class PerspectiveTransformation(Component):
                                       hough_p_maxLineGap=10,
                                       intermediate=True):
 
-        # Ön işleme
         if preprocess_method == 'aggressive':
-            preprocessed = img.preprocess_image_aggressive(img)
+            preprocessed = self.preprocess_image_aggressive(img)
         elif preprocess_method == 'small':
-            preprocessed = img.preprocess_image_small(img)
+            preprocessed = self.preprocess_image_small(img)
         elif preprocess_method == 'advanced':
-            preprocessed = img.preprocess_image_advanced(img)
+            preprocessed = self.preprocess_image_advanced(img)
         else: # 'default'
-            preprocessed = img.preprocess_image(img)
+            preprocessed = self.preprocess_image(img)
 
         if deblur:
-            preprocessed = img.sharpen_image(preprocessed)
+            preprocessed = self.sharpen_image(preprocessed)
 
         if remove_background:
-            preprocessed = img.remove_background_grabcut(preprocessed)
+            preprocessed = self.remove_background_grabcut(preprocessed)
 
         if remove_shadows_flag:
-            preprocessed = img.remove_shadows(preprocessed)
+            preprocessed = self.remove_shadows(preprocessed)
 
 
         gray = cv2.cvtColor(preprocessed, cv2.COLOR_BGR2GRAY)
 
-        # Apply blur
         if blur_method == 'median':
              blurred = cv2.medianBlur(gray, median_blur_size)
         elif blur_method == 'bilateral':
-             blurred = cv2.bilateralFilter(gray, 9, 75, 75) # Default parameters
+             blurred = cv2.bilateralFilter(gray, 9, 75, 75)
         else:
-             blurred = gray # No blur
+             blurred = gray
 
 
         # Perform detection based on the selected method
@@ -551,10 +552,8 @@ class PerspectiveTransformation(Component):
         if corners is None or len(corners) < 4:
              raise ValueError(f"Detection method '{detection_method}' failed to find 4 corners.")
 
-        # Reorder corners
         corners = reorder_corners(corners)
 
-        # Hedef boyut hesaplama (A4 oranı yaklaşık 0.707)
         h_img, w_img = img.shape[:2]
         min_dim = min(h_img, w_img)
         if h_img > w_img:
@@ -572,8 +571,6 @@ class PerspectiveTransformation(Component):
         else:
             return corrected
 
-
-    # ----- GELİŞTİRİLMİŞ TÜM PARAMETRELERİ VE TESPİT YÖNTEMLERİNİ DENEYEN FONKSİYON -----
 
     def correct_perspective_auto_advanced_detection(img, intermediate=True):
         def try_all_tries(image):
