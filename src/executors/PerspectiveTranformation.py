@@ -4,7 +4,7 @@ from itertools import combinations
 
 import cv2
 import numpy as np
-from typing import Any, Optional, Tuple, List
+
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../../../"))
 
@@ -96,16 +96,7 @@ def to_cartesian(img, lines):
         cartesian.append((x1, y1, x2, y2))
     return cartesian
 
-def kmeans_corners(points, k=4):
-    """K-means ile fazla köşeleri 4'e indir"""
-    if len(points) <= k:
-        return points
-    kmeans = KMeans(n_clusters=k, n_init=10) # Add n_init
-    kmeans.fit(points)
-    centers = kmeans.cluster_centers_
-    return centers.astype(np.float32)
 
-# ----- EK TESPİT ETME KODLARI (KARMAŞIK ARKA PLANLAR İÇİN) -----
 
 def find_document_contours(img_gray, area_threshold_ratio=0.05):
     """Kontur tespiti ile olası belge kenarlarını bulur."""
