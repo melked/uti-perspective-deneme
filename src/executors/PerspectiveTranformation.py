@@ -590,8 +590,9 @@ class PerspectiveTransformation(Component):
                 continue
         raise RuntimeError("Tüm denemeler başarısız oldu.")
 
-    def run(self, image: Image) -> Image:
-        img = Image.get_frame(img=image, redis_db=self.redis_db)
+    def run(self) -> Image: # 'image' parametresi kaldırıldı
+        # self.image, __init__ içinde zaten ayarlanmıştır
+        img = Image.get_frame(img=self.image, redis_db=self.redis_db) # self.image kullanıldı
         if img is None or img.value is None:
             raise ValueError("No input image provided or failed to load.")
 
