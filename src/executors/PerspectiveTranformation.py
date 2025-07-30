@@ -3,6 +3,7 @@ import sys
 from itertools import combinations
 import cv2
 import numpy as np
+# from sklearn.cluster import KMeans # KMeans için gerekli - Kaldırıldı ARTIK TAMAMEN KALDIRILDI
 
 # Sistem yolunu güncelleyin
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../../../"))
@@ -226,10 +227,10 @@ class PerspectiveTransformation(Component):
             print(f"HATA: PackageModel başlatılırken beklenmeyen bir hata oluştu: {e}")
             raise RuntimeError("PackageModel başlatılamadı.") from e
 
+        # inputImage parametresini güvenle alın (artık run metoduna geçirilmiyor, self.image'dan alınıyor)
         try:
-            self.image = self.request.get_param("inputImage")
-            if self.image is None:
-                print("UYARI: 'inputImage' parametresi bulunamadı veya değeri None.")
+            # self.image = self.request.get_param("inputImage") # Bu satır run metoduna taşındı
+            pass # __init__ içinde self.image'ı burada ayarlamıyoruz, run metodu alacak
         except AttributeError:
             print("HATA: 'request' nesnesinin 'get_param' metodu yok.")
             raise RuntimeError("Request nesnesi geçersiz, 'get_param' metodu eksik.")
@@ -627,8 +628,10 @@ class PerspectiveTransformation(Component):
             raise ValueError(f"Bilinmeyen perspektif tipi modu: {self.perspective_type_mode}")
 
 
-    def run(self) -> Image:
-        img = Image.get_frame(img=self.image, redis_db=self.redis_db)
+    def run(self, image: Image) -> Image: # 'image' parametresi eklendi
+        # self.image, __init__ içinde zaten ayarlanmıştır
+        # Executor'dan gelen 'image' parametresini kullanın
+        img = Image.get_frame(img=image, redis_db=self.redis_db)
         if img is None or img.value is None:
             raise ValueError("No input image provided or failed to load.")
 
