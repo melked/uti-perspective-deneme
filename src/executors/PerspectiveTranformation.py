@@ -827,26 +827,26 @@ class PerspectiveTransformation(Component):
                     continue
             raise RuntimeError("Tüm denemeler başarısız oldu.")
 
-        def run(self, image: Image) -> Image:
-            img = Image.get_frame(img=image, redis_db=self.redis_db)
-            if img is None or img.value is None:
-                raise ValueError("No input image provided or failed to load.")
+    def run(self, image: Image) -> Image:
+        img = Image.get_frame(img=image, redis_db=self.redis_db)
+        if img is None or img.value is None:
+            raise ValueError("No input image provided or failed to load.")
 
-            src_img = self._prepare_image(img.value)
+        src_img = self._prepare_image(img.value)
 
-            warped, corrected_boxes, src_quad, (out_w, out_h) = self._apply_perspective(src_img)
+        warped, corrected_boxes, src_quad, (out_w, out_h) = self._apply_perspective(src_img)
 
-            img.value = warped
-            self.image = Image.set_frame(img=img, package_uID=self.uID, redis_db=self.redis_db)
+        img.value = warped
+        self.image = Image.set_frame(img=img, package_uID=self.uID, redis_db=self.redis_db)
 
-            self.context = {
-                "src_quad": src_quad.tolist(),
-                "output_size": [out_w, out_h],
-                "corrected_boxes": corrected_boxes,
-                "keep_side": self.keep_side,
-                "warp_image": self.warp_image_flag,
-            }
-            return build_response(context=self)
+        self.context = {
+            "src_quad": src_quad.tolist(),
+            "output_size": [out_w, out_h],
+            "corrected_boxes": corrected_boxes,
+            "keep_side": self.keep_side,
+            "warp_image": self.warp_image_flag,
+        }
+        return build_response(context=self)
 
 
 if __name__ == "__main__":
