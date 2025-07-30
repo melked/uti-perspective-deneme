@@ -888,5 +888,5 @@ class PerspectiveTransformation(Component):
             }
             return build_response(context=self)
 
-    if __name__ == "__main__":
-        Executor(sys.argv[1]).run()
+if __name__ == "__main__":
+    Executor(sys.argv[1]).run()
