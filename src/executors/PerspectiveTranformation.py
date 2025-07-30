@@ -6,8 +6,6 @@ import cv2
 import numpy as np
 from typing import Any, Optional, Tuple, List
 
-from sklearn.cluster import KMeans
-
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../../../"))
 
 from sdks.novavision.src.media.image import Image
