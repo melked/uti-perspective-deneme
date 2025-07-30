@@ -3,7 +3,6 @@ import sys
 from itertools import combinations
 import cv2
 import numpy as np
-# from sklearn.cluster import KMeans # KMeans için gerekli - Kaldırıldı ARTIK TAMAMEN KALDIRILDI
 
 # Sistem yolunu güncelleyin
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../../../"))
@@ -227,10 +226,11 @@ class PerspectiveTransformation(Component):
             print(f"HATA: PackageModel başlatılırken beklenmeyen bir hata oluştu: {e}")
             raise RuntimeError("PackageModel başlatılamadı.") from e
 
-        # inputImage parametresini güvenle alın (artık run metoduna geçirilmiyor, self.image'dan alınıyor)
+        # inputImage parametresini __init__ içinde alın
         try:
-            # self.image = self.request.get_param("inputImage") # Bu satır run metoduna taşındı
-            pass # __init__ içinde self.image'ı burada ayarlamıyoruz, run metodu alacak
+            self.image = self.request.get_param("inputImage")
+            if self.image is None:
+                print("UYARI: 'inputImage' parametresi bulunamadı veya değeri None.")
         except AttributeError:
             print("HATA: 'request' nesnesinin 'get_param' metodu yok.")
             raise RuntimeError("Request nesnesi geçersiz, 'get_param' metodu eksik.")
@@ -571,7 +571,6 @@ class PerspectiveTransformation(Component):
                             threshold_min=params.get("threshold_min", 30),
                             median_blur_size=params.get("median_blur_size", 51),
                             rho=params.get("rho", 1),
-                            # Hata burada düzeltildi: fazladan parantez kaldırıldı
                             theta=params.get("theta", np.pi/180),
                             threshold_intersect=params.get("threshold_intersect", 250),
                             aggressive_preprocess=params.get("aggressive_preprocess", False),
@@ -629,8 +628,9 @@ class PerspectiveTransformation(Component):
             raise ValueError(f"Bilinmeyen perspektif tipi modu: {self.perspective_type_mode}")
 
 
-    def run(self, image: Image) -> Image:
-        img = Image.get_frame(img=image, redis_db=self.redis_db)
+    def run(self) -> Image: # 'image' parametresi kaldırıldı
+        # self.image, __init__ içinde zaten ayarlanmıştır
+        img = Image.get_frame(img=self.image, redis_db=self.redis_db)
         if img is None or img.value is None:
             raise ValueError("No input image provided or failed to load.")
 
