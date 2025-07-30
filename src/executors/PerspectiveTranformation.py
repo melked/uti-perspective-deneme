@@ -227,8 +227,39 @@ class PerspectiveTransformation(Component):
     def __init__(self, request, bootstrap):
         super().__init__(request, bootstrap)
         self.context = {}
-        self.request.model = PackageModel(**(self.request.data))
-        self.image = self.request.get_param("inputImage")
+
+        # self.request.data'nın bir sözlük olduğundan emin olun ve PackageModel'i güvenle başlatın
+        if not isinstance(self.request.data, dict):
+            print(
+                f"UYARI: self.request.data bir sözlük değil, tipi: {type(self.request.data)}. Boş bir sözlük kullanılıyor.")
+            model_data = {}
+        else:
+            model_data = self.request.data
+
+        try:
+            self.request.model = PackageModel(**model_data)
+        except TypeError as e:
+            # PackageModel'in beklediği argümanlar eksik veya yanlış olabilir
+            print(f"HATA: PackageModel başlatılırken TypeError oluştu: {e}")
+            print(f"self.request.data içeriği: {model_data}")
+            raise RuntimeError("PackageModel başlatılamadı, lütfen request.data'yı kontrol edin.") from e
+        except Exception as e:
+            # Diğer olası hataları yakala
+            print(f"HATA: PackageModel başlatılırken beklenmeyen bir hata oluştu: {e}")
+            print(f"self.request.data içeriği: {model_data}")
+            raise RuntimeError("PackageModel başlatılamadı.") from e
+
+        # inputImage parametresini güvenle alın
+        try:
+            self.image = self.request.get_param("inputImage")
+            if self.image is None:
+                print("UYARI: 'inputImage' parametresi bulunamadı veya değeri None.")
+        except AttributeError:
+            print("HATA: 'request' nesnesinin 'get_param' metodu yok.")
+            raise RuntimeError("Request nesnesi geçersiz, 'get_param' metodu eksik.")
+        except Exception as e:
+            print(f"HATA: 'inputImage' parametresi alınırken beklenmeyen bir hata oluştu: {e}")
+            raise RuntimeError("'inputImage' parametresi alınamadı.") from e
 
     @staticmethod
     def bootstrap(config: dict) -> dict:
@@ -827,27 +858,35 @@ class PerspectiveTransformation(Component):
                     continue
             raise RuntimeError("Tüm denemeler başarısız oldu.")
 
-    def run(self, image: Image) -> Image:
-        img = Image.get_frame(img=image, redis_db=self.redis_db)
-        if img is None or img.value is None:
-            raise ValueError("No input image provided or failed to load.")
+        def run(self, image: Image) -> Image:
+            # ... (run metodunuzun içeriği) ...
+            img = Image.get_frame(img=image, redis_db=self.redis_db)
+            if img is None or img.value is None:
+                raise ValueError("No input image provided or failed to load.")
 
-        src_img = self._prepare_image(img.value)
+            # _apply_perspective metodunuzu burada çağırın.
+            # Bu metodun tanımını ve döndürdüğü değerleri kontrol etmeniz gerekebilir.
+            # Eğer _apply_perspective metodunuz yoksa veya bu satırda hata alıyorsanız,
+            # bu metodun implementasyonunu eklemeniz veya düzeltmeniz gerekecektir.
+            try:
+                warped, corrected_boxes, src_quad, (out_w, out_h) = self._apply_perspective(src_img)
+            except AttributeError:
+                raise NotImplementedError("'_apply_perspective' metodu tanımlanmamış veya erişilemiyor.")
+            except Exception as e:
+                raise RuntimeError(f"Perspektif düzeltme sırasında hata oluştu: {e}")
 
-        warped, corrected_boxes, src_quad, (out_w, out_h) = self._apply_perspective(src_img)
+            img.value = warped
+            self.image = Image.set_frame(img=img, package_uID=self.uID, redis_db=self.redis_db)
 
-        img.value = warped
-        self.image = Image.set_frame(img=img, package_uID=self.uID, redis_db=self.redis_db)
+            self.context = {
+                "src_quad": src_quad.tolist(),
+                "output_size": [out_w, out_h],
+                "corrected_boxes": corrected_boxes,
+                "keep_side": self.keep_side,
+                # Bu özelliklerin de request.data'dan gelmesi veya varsayılan değerleri olması gerekebilir.
+                "warp_image": self.warp_image_flag,  # Aynı şekilde
+            }
+            return build_response(context=self)
 
-        self.context = {
-            "src_quad": src_quad.tolist(),
-            "output_size": [out_w, out_h],
-            "corrected_boxes": corrected_boxes,
-            "keep_side": self.keep_side,
-            "warp_image": self.warp_image_flag,
-        }
-        return build_response(context=self)
-
-
-if __name__ == "__main__":
-    Executor(sys.argv[1]).run()
+    if __name__ == "__main__":
+        Executor(sys.argv[1]).run()
