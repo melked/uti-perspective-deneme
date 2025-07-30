@@ -1,10 +1,9 @@
 import os
 import sys
 from itertools import combinations
-
 import cv2
 import numpy as np
-from tensorflow.python.ops.clustering_ops import KMeans
+
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../../../"))
 
@@ -16,7 +15,7 @@ from components.PerspectiveTransformation.src.utils.response import build_respon
 
 
 def get_intersections(img, lines):
-    """Çizgilerin kesişim noktalarını hesaplar"""
+
     height, width = img.shape[:2]
     intersections = []
     for i, line1 in enumerate(lines):
@@ -96,14 +95,16 @@ def to_cartesian(img, lines):
         cartesian.append((x1, y1, x2, y2))
     return cartesian
 
-def kmeans_corners(points, k=4):
-    """K-means ile fazla köşeleri 4'e indir"""
-    if len(points) <= k:
-        return points
-    kmeans = KMeans(n_clusters=k, n_init=10) # Add n_init
-    kmeans.fit(points)
-    centers = kmeans.cluster_centers_
-    return centers.astype(np.float32)
+def approximate_4_corners(points):
+
+    if len(points) <= 4:
+        return points.astype(np.float32)
+
+    # Başlangıç noktası olarak merkez hesapla ve en uzak 4 noktayı al
+    center = np.mean(points, axis=0)
+    distances = np.linalg.norm(points - center, axis=1)
+    idxs = np.argsort(distances)[-4:]
+    return points[idxs].astype(np.float32)
 
 def find_document_contours(img_gray, area_threshold_ratio=0.05):
     """Kontur tespiti ile olası belge kenarlarını bulur."""
@@ -828,15 +829,11 @@ class PerspectiveTransformation(Component):
 
             src_img = self._prepare_image(img.value)
 
-            # Perspektif düzeltmeyi uygula
             warped, corrected_boxes, src_quad, (out_w, out_h) = self._apply_perspective(src_img)
 
-            # Güncellenen görüntüyü pakete set et
             img.value = warped
             self.image = Image.set_frame(img=img, package_uID=self.uID, redis_db=self.redis_db)
 
-
-            # Yanıt için context hazırla
             self.context = {
                 "src_quad": src_quad.tolist(),
                 "output_size": [out_w, out_h],
