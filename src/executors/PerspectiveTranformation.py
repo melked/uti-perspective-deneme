@@ -1,203 +1,3 @@
-from pydantic import Field, validator
-from typing import List, Optional, Union, Literal
-from sdks.novavision.src.base.model import Package, Image, Inputs, Configs, Outputs, Response, Request, Output, Input, Config
-
-
-class InputImage(Input):
-    name: Literal["inputImage"] = "inputImage"
-    value: Union[List[Image], Image]
-    type: str = "object"
-
-    @validator("type", pre=True, always=True)
-    def set_type_based_on_value(cls, value, values):
-        value = values.get('value')
-        if isinstance(value, Image):
-            return "object"
-        elif isinstance(value, list):
-            return "list"
-
-    class Config:
-        title = "Image"
-
-
-class OutputImage(Output):
-    name: Literal["outputImage"] = "outputImage"
-    value: Union[List[Image],Image]
-    type: str = "object"
-
-    @validator("type", pre=True, always=True)
-    def set_type_based_on_value(cls, value, values):
-        value = values.get('value')
-        if isinstance(value, Image):
-            return "object"
-        elif isinstance(value, list):
-            return "list"
-
-    class Config:
-        title = "Image"
-
-class KeepSideFalse(Config):
-    name: Literal["False"] = "False"
-    value: Literal[False] = False
-    type: Literal["bool"] = "bool"
-    field: Literal["option"] = "option"
-
-    class Config:
-        title = "Disable"
-
-
-class KeepSideTrue(Config):
-    name: Literal["True"] = "True"
-    value: Literal[True] = True
-    type: Literal["bool"] = "bool"
-    field: Literal["option"] = "option"
-
-    class Config:
-        title = "Enable"
-
-
-class KeepSideBBox(Config):
-    """
-       output olculeri icin.
-    """
-    name: Literal["KeepSide"] = "KeepSide"
-    value: Union[KeepSideTrue, KeepSideFalse]
-    type: Literal["object"] = "object"
-    field: Literal["dropdownlist"] = "dropdownlist"
-
-    class Config:
-        title = "Keep Sides"
-
-class OutputWidth(Config):
-    """
-    Output image width in pixels.
-    Minimum 100, maximum 4096.
-    """
-    name: Literal["OutputWidth"] = "OutputWidth"
-    value: int = Field(default=800, ge=100, le=4096)
-    type: Literal["number"] = "number"
-    field: Literal["textInput"] = "textInput"
-
-    class Config:
-        title = "Output Width (px)"
-
-
-class OutputHeight(Config):
-    """
-    Output image height in pixels.
-    Minimum 100, maximum 4096.
-    """
-    name: Literal["OutputHeight"] = "OutputHeight"
-    value: int = Field(default=600, ge=100, le=4096)
-    type: Literal["number"] = "number"
-    field: Literal["textInput"] = "textInput"
-
-    class Config:
-        title = "Output Height (px)"
-
-class AutoPerspective(Config):
-
-    name: Literal["Auto"] = "Auto"
-    value: str = Field(default="Auto")
-    type: Literal["string"] = "string"
-    field: Literal["option"] = "option"
-    class Config:
-        title = "Auto"
-
-
-class AdvancedPerspective(Config):
-
-    name: Literal["Advanced"] = "Advanced"
-    value: str = Field(default="Advanced")
-    type: Literal["string"] = "string"
-    field: Literal["option"] = "option"
-    class Config:
-        title = "Advanced"
-
-
-
-class PerspectiveTypeMode(Config):
-    name: Literal["PerspectiveTypeMode"] = "PerspectiveTypeMode"
-    value: Union[AutoPerspective,AdvancedPerspective]
-    type: Literal["object"] = "object"
-    field: Literal["dependentDropdownlist"] = "dependentDropdownlist"
-    class Config:
-        title = "Perspective Type"
-
-
-class PerspectiveTransformationInputs(Inputs):
-    inputImage: InputImage
-
-
-class PerspectiveTransformationConfigs(Configs):
-    PerspectiveTypeMode:PerspectiveTypeMode
-    drawBBox: KeepSideBBox
-    outputWidth: OutputWidth
-    outputHeight: OutputHeight
-
-
-
-class PerspectiveTransformationOutputs(Outputs):
-    outputImage: OutputImage
-
-
-class PerspectiveTransformationRequest(Request):
-    inputs: Optional[PerspectiveTransformationInputs]
-    configs: PerspectiveTransformationConfigs
-
-    class Config:
-        json_schema_extra = {
-            "target": "configs"
-        }
-
-
-class PerspectiveTransformationResponse(Response):
-    outputs: PerspectiveTransformationOutputs
-
-
-class PerspectiveTransformationExecutor(Config):
-    name: Literal["PerspectiveTransformation"] = "PerspectiveTransformation"
-    value: Union[PerspectiveTransformationRequest, PerspectiveTransformationResponse]
-    type: Literal["object"] = "object"
-    field: Literal["option"] = "option"
-
-    class Config:
-        title = "PerspectiveTransformation"
-        json_schema_extra = {
-            "target": {
-                "value": 0
-            }
-        }
-
-
-class ConfigExecutor(Config):
-    name: Literal["ConfigExecutor"] = "ConfigExecutor"
-    value: Union[PerspectiveTransformationExecutor]
-    type: Literal["executor"] = "executor"
-    field: Literal["dependentDropdownlist"] = "dependentDropdownlist"
-
-    class Config:
-        title = "Task"
-        json_schema_extra = {
-            "target": "value"
-        }
-
-
-class PackageConfigs(Configs):
-    executor: ConfigExecutor
-
-
-class PackageModel(Package):
-    configs: PackageConfigs
-    type: Literal["component"] = "component"
-    name: Literal["PerspectiveTransformation"] = "PerspectiveTransformation"
-```
-Please replace the content of your `PackageModel.py` file with the code provided above.
-
-Additionally, here is the `perspective_transformation_code` Canvas, which remains unchanged as the error was not in this file:
-
-
-```python
 import os
 import sys
 from itertools import combinations
@@ -771,7 +571,8 @@ class PerspectiveTransformation(Component):
                             threshold_min=params.get("threshold_min", 30),
                             median_blur_size=params.get("median_blur_size", 51),
                             rho=params.get("rho", 1),
-                            theta=np.pi/180),
+                            # Hata burada düzeltildi: fazladan parantez kaldırıldı
+                            theta=params.get("theta", np.pi/180),
                             threshold_intersect=params.get("threshold_intersect", 250),
                             aggressive_preprocess=params.get("aggressive_preprocess", False),
                             small_image_preprocess=params.get("small_image_preprocess", False),
@@ -828,16 +629,13 @@ class PerspectiveTransformation(Component):
             raise ValueError(f"Bilinmeyen perspektif tipi modu: {self.perspective_type_mode}")
 
 
-    def run(self, image: Image) -> Image: # 'image' parametresi eklendi
-        # self.image, __init__ içinde zaten ayarlanmıştır
-        # Executor'dan gelen 'image' parametresini kullanın
+    def run(self, image: Image) -> Image:
         img = Image.get_frame(img=image, redis_db=self.redis_db)
         if img is None or img.value is None:
             raise ValueError("No input image provided or failed to load.")
 
         src_img = self._prepare_image(img.value)
 
-        # _apply_perspective metodunu çağırın. Bu metod artık run'ın beklediği tüm değerleri döndürüyor.
         warped, corrected_boxes, src_quad, (out_w, out_h) = self._apply_perspective(src_img)
 
         img.value = warped
@@ -848,7 +646,7 @@ class PerspectiveTransformation(Component):
             "output_size": [out_w, out_h],
             "corrected_boxes": corrected_boxes,
             "keep_side": self.keep_side,
-            "warp_image": self.warp_image_flag, # Bu bayrak hala kullanılıyor mu kontrol edilebilir
+            "warp_image": self.warp_image_flag,
         }
         return build_response(context=self)
 
