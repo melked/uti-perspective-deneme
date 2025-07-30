@@ -1,3 +1,203 @@
+from pydantic import Field, validator
+from typing import List, Optional, Union, Literal
+from sdks.novavision.src.base.model import Package, Image, Inputs, Configs, Outputs, Response, Request, Output, Input, Config
+
+
+class InputImage(Input):
+    name: Literal["inputImage"] = "inputImage"
+    value: Union[List[Image], Image]
+    type: str = "object"
+
+    @validator("type", pre=True, always=True)
+    def set_type_based_on_value(cls, value, values):
+        value = values.get('value')
+        if isinstance(value, Image):
+            return "object"
+        elif isinstance(value, list):
+            return "list"
+
+    class Config:
+        title = "Image"
+
+
+class OutputImage(Output):
+    name: Literal["outputImage"] = "outputImage"
+    value: Union[List[Image],Image]
+    type: str = "object"
+
+    @validator("type", pre=True, always=True)
+    def set_type_based_on_value(cls, value, values):
+        value = values.get('value')
+        if isinstance(value, Image):
+            return "object"
+        elif isinstance(value, list):
+            return "list"
+
+    class Config:
+        title = "Image"
+
+class KeepSideFalse(Config):
+    name: Literal["False"] = "False"
+    value: Literal[False] = False
+    type: Literal["bool"] = "bool"
+    field: Literal["option"] = "option"
+
+    class Config:
+        title = "Disable"
+
+
+class KeepSideTrue(Config):
+    name: Literal["True"] = "True"
+    value: Literal[True] = True
+    type: Literal["bool"] = "bool"
+    field: Literal["option"] = "option"
+
+    class Config:
+        title = "Enable"
+
+
+class KeepSideBBox(Config):
+    """
+       output olculeri icin.
+    """
+    name: Literal["KeepSide"] = "KeepSide"
+    value: Union[KeepSideTrue, KeepSideFalse]
+    type: Literal["object"] = "object"
+    field: Literal["dropdownlist"] = "dropdownlist"
+
+    class Config:
+        title = "Keep Sides"
+
+class OutputWidth(Config):
+    """
+    Output image width in pixels.
+    Minimum 100, maximum 4096.
+    """
+    name: Literal["OutputWidth"] = "OutputWidth"
+    value: int = Field(default=800, ge=100, le=4096)
+    type: Literal["number"] = "number"
+    field: Literal["textInput"] = "textInput"
+
+    class Config:
+        title = "Output Width (px)"
+
+
+class OutputHeight(Config):
+    """
+    Output image height in pixels.
+    Minimum 100, maximum 4096.
+    """
+    name: Literal["OutputHeight"] = "OutputHeight"
+    value: int = Field(default=600, ge=100, le=4096)
+    type: Literal["number"] = "number"
+    field: Literal["textInput"] = "textInput"
+
+    class Config:
+        title = "Output Height (px)"
+
+class AutoPerspective(Config):
+
+    name: Literal["Auto"] = "Auto"
+    value: str = Field(default="Auto")
+    type: Literal["string"] = "string"
+    field: Literal["option"] = "option"
+    class Config:
+        title = "Auto"
+
+
+class AdvancedPerspective(Config):
+
+    name: Literal["Advanced"] = "Advanced"
+    value: str = Field(default="Advanced")
+    type: Literal["string"] = "string"
+    field: Literal["option"] = "option"
+    class Config:
+        title = "Advanced"
+
+
+
+class PerspectiveTypeMode(Config):
+    name: Literal["PerspectiveTypeMode"] = "PerspectiveTypeMode"
+    value: Union[AutoPerspective,AdvancedPerspective]
+    type: Literal["object"] = "object"
+    field: Literal["dependentDropdownlist"] = "dependentDropdownlist"
+    class Config:
+        title = "Perspective Type"
+
+
+class PerspectiveTransformationInputs(Inputs):
+    inputImage: InputImage
+
+
+class PerspectiveTransformationConfigs(Configs):
+    PerspectiveTypeMode:PerspectiveTypeMode
+    drawBBox: KeepSideBBox
+    outputWidth: OutputWidth
+    outputHeight: OutputHeight
+
+
+
+class PerspectiveTransformationOutputs(Outputs):
+    outputImage: OutputImage
+
+
+class PerspectiveTransformationRequest(Request):
+    inputs: Optional[PerspectiveTransformationInputs]
+    configs: PerspectiveTransformationConfigs
+
+    class Config:
+        json_schema_extra = {
+            "target": "configs"
+        }
+
+
+class PerspectiveTransformationResponse(Response):
+    outputs: PerspectiveTransformationOutputs
+
+
+class PerspectiveTransformationExecutor(Config):
+    name: Literal["PerspectiveTransformation"] = "PerspectiveTransformation"
+    value: Union[PerspectiveTransformationRequest, PerspectiveTransformationResponse]
+    type: Literal["object"] = "object"
+    field: Literal["option"] = "option"
+
+    class Config:
+        title = "PerspectiveTransformation"
+        json_schema_extra = {
+            "target": {
+                "value": 0
+            }
+        }
+
+
+class ConfigExecutor(Config):
+    name: Literal["ConfigExecutor"] = "ConfigExecutor"
+    value: Union[PerspectiveTransformationExecutor]
+    type: Literal["executor"] = "executor"
+    field: Literal["dependentDropdownlist"] = "dependentDropdownlist"
+
+    class Config:
+        title = "Task"
+        json_schema_extra = {
+            "target": "value"
+        }
+
+
+class PackageConfigs(Configs):
+    executor: ConfigExecutor
+
+
+class PackageModel(Package):
+    configs: PackageConfigs
+    type: Literal["component"] = "component"
+    name: Literal["PerspectiveTransformation"] = "PerspectiveTransformation"
+```
+Please replace the content of your `PackageModel.py` file with the code provided above.
+
+Additionally, here is the `perspective_transformation_code` Canvas, which remains unchanged as the error was not in this file:
+
+
+```python
 import os
 import sys
 from itertools import combinations
@@ -54,7 +254,7 @@ def reorder_corners(corners):
     new_corners[0] = corners[np.argmin(s)]      # üst sol
     new_corners[2] = corners[np.argmax(s)]      # alt sağ
     new_corners[1] = corners[np.argmin(diff)]   # üst sağ
-    new_corners[3] = corners[np.argmax(diff)]   # alt sol
+    new_corners[3] = corners[np.argmax(diff)]   # Sol alt
     return new_corners
 
 def filter_perpendicular(lines, margin=np.pi/18):
@@ -146,7 +346,7 @@ def get_corners_from_contours(contours):
 
 def detect_corners_shi_tomasi(img_gray, maxCorners=100, qualityLevel=0.01, minDistance=10):
     """Shi-Tomasi köşe tespit yöntemi"""
-    corners = cv2.goodFeaturesToTrack(img_gray, maxCorners=maxCorners, qualityLevel=qualityLevel, minDistance=minDistance)
+    corners = cv2.goodFeaturesToTrack(img_gray, maxCorners=maxCorners, qualityLevel=qualityLevel, minDistance=10)
     if corners is not None:
         return np.float32(corners).reshape(-1, 2)
     return np.array([], dtype=np.float32)
@@ -571,7 +771,7 @@ class PerspectiveTransformation(Component):
                             threshold_min=params.get("threshold_min", 30),
                             median_blur_size=params.get("median_blur_size", 51),
                             rho=params.get("rho", 1),
-                            theta=params.get("theta", np.pi/180),
+                            theta=np.pi/180),
                             threshold_intersect=params.get("threshold_intersect", 250),
                             aggressive_preprocess=params.get("aggressive_preprocess", False),
                             small_image_preprocess=params.get("small_image_preprocess", False),
