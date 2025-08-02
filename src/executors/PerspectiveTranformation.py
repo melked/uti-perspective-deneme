@@ -6,7 +6,8 @@ import numpy as np
 # from sklearn.cluster import KMeans # KMeans için gerekli - Kaldırıldı
 
 # Sistem yolunu güncelleyin
-sys.path.append(os.path.join(os.path.dirname(__file__), "../../../../"))
+# Removed the line causing NameError: name '__file__' is not defined
+# sys.path.append(os.path.join(os.path.dirname(__file__), "../../../../"))
 
 from sdks.novavision.src.media.image import Image
 from sdks.novavision.src.base.component import Component
@@ -110,8 +111,8 @@ def select_outermost_corners(points, k=4):
     Verilen noktalardan en dıştaki k (varsayılan 4) köşeyi seçer.
     K-Means yerine basit geometrik yaklaşımla en uzak noktaları bulur.
     """
-    if len(points) <= k:
-        return points.astype(np.float32)
+    if points is None or len(points) < k:
+        return None
 
     # Noktaların merkezini bul
     centroid = np.mean(points, axis=0)
@@ -171,6 +172,9 @@ def get_intersections_from_segments(segments, img_shape, img=None):
     height, width = img_shape[:2]
     intersections = []
     extended_lines = []
+    if segments is None:
+        return np.array([], dtype=np.float32)
+
     for x1, y1, x2, y2 in segments:
         if x2 - x1 == 0: # Vertical line
             extended_lines.append((x1, 0, x1, height))
@@ -208,6 +212,76 @@ def get_intersections_from_segments(segments, img_shape, img=None):
     if extended_lines:
          intersections = get_intersections(img, extended_lines)
     return intersections
+
+def select_best_corners(points, img_shape):
+    """
+    Selects the best 4 corners from a set of points, prioritizing points near image corners
+    and forming a convex quadrilateral.
+    """
+    if points is None or len(points) < 4:
+        return None
+
+    # Simple approach: prioritize points closest to the four image corners
+    h, w = img_shape[:2]
+    image_corners = np.array([[0, 0], [w, 0], [w, h], [0, h]], dtype=np.float32)
+
+    best_corners = np.zeros((4, 2), dtype=np.float32)
+    used_point_indices = set()
+
+    for i, img_corner in enumerate(image_corners):
+        min_dist = float('inf')
+        best_point_idx = -1
+        for j, point in enumerate(points):
+            if j not in used_point_indices:
+                dist = np.linalg.norm(point - img_corner)
+                if dist < min_dist:
+                    min_dist = dist
+                    best_point_idx = j
+
+        if best_point_idx != -1:
+            best_corners[i] = points[best_point_idx]
+            used_point_indices.add(best_point_idx)
+        else:
+            # If no unused point is found, fall back to outermost selection for this corner
+             fallback_corners = select_outermost_corners(points, k=4)
+             if fallback_corners is not None:
+                  best_corners = fallback_corners
+                  break # Use fallback and exit loop
+             else:
+                 return None # Cannot even find 4 outermost points
+
+
+    # Check if the selected corners form a convex quadrilateral (basic check)
+    # This is a simplification; a more robust check might be needed
+    try:
+        # Calculate area using shoelace formula; area should be positive for a non-self-intersecting polygon
+        # Also check orientation (should be consistent, e.g., clockwise or counter-clockwise)
+        # For a convex quad, the cross product of adjacent vectors should have the same sign
+        v1 = best_corners[1] - best_corners[0]
+        v2 = best_corners[2] - best_corners[1]
+        v3 = best_corners[3] - best_corners[2]
+        v4 = best_corners[0] - best_corners[3]
+
+        cross_products = [
+            np.cross(v1, v2),
+            np.cross(v2, v3),
+            np.cross(v3, v4),
+            np.cross(v4, v1)
+        ]
+
+        # Check if all cross products have the same sign (or are zero, indicating collinear points)
+        # A more robust check would handle near-collinear points and small errors
+        signs = np.sign(cross_products)
+        if np.all(signs >= 0) or np.all(signs <= 0):
+             # Reorder if needed to ensure a consistent order (e.g., top-left, top-right, bottom-right, bottom-left)
+             return reorder_corners(best_corners)
+        else:
+             print("Warning: Selected corners do not form a convex quadrilateral.")
+             return None # Not a convex quad
+
+    except Exception as e:
+        print(f"Error during convexity check: {e}")
+        return None # Return None if check fails
 
 
 class PerspectiveTransformation(Component):
@@ -459,8 +533,8 @@ class PerspectiveTransformation(Component):
                         cartesian = to_cartesian(img, lines)
                         intersections = get_intersections(img, cartesian)
                         if len(intersections) >= 4:
-                            # Use simplified method to get 4 corners
-                            corners = select_outermost_corners(intersections, k=4)
+                            # Use improved corner selection method
+                            corners = select_best_corners(intersections, img.shape)
 
 
         elif detection_method == 'contour':
@@ -476,36 +550,39 @@ class PerspectiveTransformation(Component):
                 document_contours = find_document_contours(thresh, area_threshold_ratio=contour_area_threshold_ratio)
                 if document_contours:
                     # Assuming the largest contour is the document
-                    corners = get_corners_from_contours([document_contours[0]])
+                    potential_corners = get_corners_from_contours([document_contours[0]])
+                    if potential_corners is not None and len(potential_corners) >= 4:
+                        # Use improved corner selection method
+                        corners = select_best_corners(potential_corners, img.shape)
 
 
         elif detection_method == 'shi_tomasi':
             # Apply preprocessing suitable for corner detection before Shi-Tomasi
             # Using blurred image as input for corner detectors often works well
-            corners = detect_corners_shi_tomasi(
+            potential_corners = detect_corners_shi_tomasi(
                 blurred,
                 maxCorners=shi_tomasi_maxCorners,
                 qualityLevel=shi_tomasi_qualityLevel,
                 minDistance=shi_tomasi_minDistance
             )
-            # Use simplified selection if more than 4 points are found
-            if corners is not None and len(corners) > 4:
-                 corners = select_outermost_corners(corners, k=4)
+            if potential_corners is not None and len(potential_corners) >= 4:
+                 # Use improved corner selection method
+                 corners = select_best_corners(potential_corners, img.shape)
 
 
         elif detection_method == 'harris':
              # Apply preprocessing suitable for corner detection before Harris
              # Using blurred image as input for corner detectors often works well
-             corners = detect_corners_harris(
+             potential_corners = detect_corners_harris(
                  blurred,
                  blockSize=harris_blockSize,
                  ksize=harris_ksize,
                  k=harris_k,
                  threshold=harris_threshold
              )
-             # Use simplified selection if more than 4 points are found
-             if corners is not None and len(corners) > 4:
-                 corners = select_outermost_corners(corners, k=4)
+             if potential_corners is not None and len(potential_corners) >= 4:
+                 # Use improved corner selection method
+                 corners = select_best_corners(potential_corners, img.shape)
 
 
         elif detection_method == 'hough_lines_p':
@@ -549,8 +626,8 @@ class PerspectiveTransformation(Component):
                      # Find intersections from these line segments and then corners
                      intersections_p = get_intersections_from_segments(lines_p, img.shape)
                      if len(intersections_p) >= 4:
-                         # Use simplified selection to get 4 corners
-                         corners = select_outermost_corners(intersections_p, k=4)
+                         # Use improved corner selection method
+                         corners = select_best_corners(intersections_p, img.shape)
 
 
         if corners is None or len(corners) != 4: # Ensure exactly 4 corners were found by the simplified method
@@ -625,27 +702,27 @@ class PerspectiveTransformation(Component):
             edge_detectors = ['canny', 'sobel']
             blur_methods = ['median', 'bilateral']
             median_blur_sizes = [3, 5, 7, 11, 21, 31, 41, 51, 61, 71, 81, 91, 101] # Genişletilmiş
-            canny_threshold_max_values = list(range(20, 251, 10)) # Genişletilmiş
-            canny_threshold_min_values = list(range(5, 121, 5)) # Genişletilmiş
-            sobel_threshold_min_values = list(range(5, 101, 5)) # Genişletilmiş
-            sobel_threshold_max_values = list(range(100, 256, 10)) # Genişletilmiş
+            canny_threshold_max_values = list(range(20, 251, 30)) # Genişletilmiş - Reduced step
+            canny_threshold_min_values = list(range(5, 121, 15)) # Genişletilmiş - Reduced step
+            sobel_threshold_min_values = list(range(5, 101, 15)) # Genişletilmiş - Reduced step
+            sobel_threshold_max_values = list(range(100, 256, 30)) # Genişletilmiş - Reduced step
             rho_values = [1, 0.5, 2] # Genişletilmiş
-            theta_values = [np.pi/180, np.pi/360, np.pi/90] # Genişletilmiş
-            threshold_intersect_values = list(range(50, 501, 25)) # Genişletilmiş
+            theta_values = [np.pi/180, np.pi/360] # Genişletilmiş - Reduced options
+            threshold_intersect_values = list(range(50, 501, 50)) # Genişletilmiş - Reduced step
             detection_methods = ['hough', 'contour', 'shi_tomasi', 'harris', 'hough_lines_p']
-            contour_area_threshold_ratios = [0.01, 0.03, 0.05, 0.08, 0.1] # Genişletilmiş
-            shi_tomasi_maxCorners_values = [50, 100, 150, 200] # Genişletilmiş
-            shi_tomasi_qualityLevel_values = [0.005, 0.01, 0.05, 0.1] # Genişletilmiş
-            shi_tomasi_minDistance_values = [5, 10, 20, 30] # Genişletilmiş
-            harris_blockSize_values = [2, 3, 5] # Genişletilmiş
-            harris_ksize_values = [3, 5, 7] # Genişletilmiş
-            harris_k_values = [0.01, 0.04, 0.05, 0.06] # Genişletilmiş
-            harris_threshold_values = [0.005, 0.01, 0.05, 0.1] # Genişletilmiş
-            hough_p_threshold_values = list(range(30, 201, 10)) # Genişletilmiş
-            hough_p_minLineLength_values = list(range(30, 201, 10)) # Genişletilmiş
-            hough_p_maxLineGap_values = list(range(5, 101, 5)) # Genişletilmiş
-            adaptive_block_size_values = [3, 5, 7, 11, 15, 21, 31] # Genişletilmiş (tek ve > 1 olmalı)
-            adaptive_c_value_values = list(range(1, 11)) # Genişletilmiş
+            contour_area_threshold_ratios = [0.01, 0.05, 0.1] # Genişletilmiş - Reduced options
+            shi_tomasi_maxCorners_values = [100, 200] # Genişletilmiş - Reduced options
+            shi_tomasi_qualityLevel_values = [0.01, 0.05] # Genişletilmiş - Reduced options
+            shi_tomasi_minDistance_values = [10, 30] # Genişletilmiş - Reduced options
+            harris_blockSize_values = [2, 3] # Genişletilmiş - Reduced options
+            harris_ksize_values = [3, 5] # Genişletilmiş - Reduced options (tek olmalı)
+            harris_k_values = [0.04, 0.05] # Genişletilmiş - Reduced options
+            harris_threshold_values = [0.01, 0.05] # Genişletilmiş - Reduced options
+            hough_p_threshold_values = list(range(30, 201, 30)) # Genişletilmiş - Reduced step
+            hough_p_minLineLength_values = list(range(30, 201, 30)) # Genişletilmiş - Reduced step
+            hough_p_maxLineGap_values = list(range(5, 101, 15)) # Genişletilmiş - Reduced step
+            adaptive_block_size_values = [11, 21, 31] # Genişletilmiş (tek ve > 1 olmalı) - Reduced options
+            adaptive_c_value_values = [2, 5, 8] # Genişletilmiş - Reduced options
 
 
             for preprocess_method in preprocess_methods:
@@ -656,7 +733,7 @@ class PerspectiveTransformation(Component):
                                 for blur_method in blur_methods:
                                     for median_blur_size in median_blur_sizes:
                                         # Median blur boyutu tek sayı olmalı
-                                        if blur_method == 'median' and median_blur_size % 2 == 0:
+                                        if blur_method == 'median' and (median_blur_size % 2 == 0 or median_blur_size <= 1):
                                             continue
                                         for detection_method in detection_methods:
                                             params = {
@@ -672,6 +749,9 @@ class PerspectiveTransformation(Component):
 
                                             if use_adaptive_thresholding:
                                                  for adaptive_block_size in adaptive_block_size_values:
+                                                     # Adaptive block size must be odd and > 1
+                                                     if adaptive_block_size % 2 == 0 or adaptive_block_size <= 1:
+                                                          continue
                                                      for adaptive_c_value in adaptive_c_value_values:
                                                         current_params = params.copy()
                                                         current_params.update({
@@ -836,9 +916,9 @@ class PerspectiveTransformation(Component):
         # Orijinal görüntü ile denemeye başla
         #print("Orijinal görüntü ile denemeye başlanıyor...") # Yazı kaldırıldı
         try:
-            warped, src_quad, output_size = try_all_tries_internal(src_img)
-            corrected_boxes = [] # Bu örnekte kutu düzeltme yapılmıyor
-            return warped, corrected_boxes, src_quad, output_size
+            warped, src_quad, (out_w, out_h) = try_all_tries_internal(src_img)
+            # corrected_boxes = [] # Bu örnekte kutu düzeltme yapılmıyor - moved inside try block
+            return warped, [], src_quad, (out_w, out_h) # Return empty corrected_boxes
         except RuntimeError as e:
             original_image_error = str(e) # Orijinal görüntü denemelerinin hatasını kaydet
             # print(f"Orijinal görüntü başarısız: {e}") # Bu satır artık yazdırılmayacak
@@ -847,9 +927,9 @@ class PerspectiveTransformation(Component):
         #print("Negatif görüntü ile denemeye başlanıyor...") # Yazı kaldırıldı
         img_neg = cv2.bitwise_not(src_img)
         try:
-            warped, src_quad, output_size = try_all_tries_internal(img_neg)
-            corrected_boxes = [] # Bu örnekte kutu düzeltme yapılmıyor
-            return warped, corrected_boxes, src_quad, output_size
+            warped, src_quad, (out_w, out_h) = try_all_tries_internal(img_neg)
+            # corrected_boxes = [] # Bu örnekte kutu düzeltme yapılmıyor - moved inside try block
+            return warped, [], src_quad, (out_w, out_h) # Return empty corrected_boxes
         except RuntimeError as e:
             negative_image_error = str(e) # Negatif görüntü denemelerinin hatasını kaydet
             # print(f"Negatif görüntü başarısız: {e}") # Bu satır artık yazdırılmayacak
@@ -871,8 +951,11 @@ class PerspectiveTransformation(Component):
 
         src_img = self._prepare_image(img.value)
 
-        # _apply_perspective metodunu çağırın. Bu metod artık run'ın beklediği tüm değerleri döndürüyor.
+        # Perspektif düzeltmeyi uygula
+        # _apply_perspective artık sadece 3 değer döndürüyor: warped, src_quad, (out_w, out_h)
+        # corrected_boxes artık _apply_perspective içinde hesaplanmıyor, bu yüzden boş bir liste olarak başlatılacak
         warped, corrected_boxes, src_quad, (out_w, out_h) = self._apply_perspective(src_img)
+
 
         img.value = warped
         self.image = Image.set_frame(img=img, package_uID=self.uID, redis_db=self.redis_db)
