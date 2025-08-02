@@ -7,7 +7,7 @@ import numpy as np
 
 # Sistem yolunu güncelleyin
 # Removed the line causing NameError: name '__file__' is not defined
-# sys.path.append(os.path.join(os.path.dirname(__file__), "../../../../"))
+sys.path.append(os.path.join(os.path.dirname(__file__), "../../../../"))
 
 from sdks.novavision.src.media.image import Image
 from sdks.novavision.src.base.component import Component
