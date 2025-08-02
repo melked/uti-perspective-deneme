@@ -1,7 +1,9 @@
-
 from pydantic import Field, validator
-from typing import List, Optional, Union, Literal
-from sdks.novavision.src.base.model import Package, Image, Inputs, Configs, Outputs, Response, Request, Output, Input, Config
+from typing import List, Optional, Literal, Union
+from sdks.novavision.src.base.model import (
+    Package, Image, Inputs, Configs, Outputs,
+    Response, Request, Output, Input, Config
+)
 
 
 class InputImage(Input):
@@ -23,7 +25,7 @@ class InputImage(Input):
 
 class OutputImage(Output):
     name: Literal["outputImage"] = "outputImage"
-    value: Union[List[Image],Image]
+    value: Union[List[Image], Image]
     type: str = "object"
 
     @validator("type", pre=True, always=True)
@@ -37,43 +39,18 @@ class OutputImage(Output):
     class Config:
         title = "Image"
 
-class KeepSideFalse(Config):
-    name: Literal["False"] = "False"
-    value: Literal[False] = False
-    type: Literal["bool"] = "bool"
-    field: Literal["option"] = "option"
-
-    class Config:
-        title = "Disable"
-
-
-class KeepSideTrue(Config):
-    name: Literal["True"] = "True"
-    value: Literal[True] = True
-    type: Literal["bool"] = "bool"
-    field: Literal["option"] = "option"
-
-    class Config:
-        title = "Enable"
-
 
 class KeepSideBBox(Config):
-    """
-       output olculeri icin.
-    """
     name: Literal["KeepSide"] = "KeepSide"
-    value: Union[KeepSideTrue, KeepSideFalse]
-    type: Literal["object"] = "object"
-    field: Literal["dropdownlist"] = "dropdownlist"
+    value: bool = False  # Auto modda genelde kapalı olabilir
+    type: Literal["bool"] = "bool"
+    field: Literal["option"] = "option"
 
     class Config:
         title = "Keep Sides"
 
+
 class OutputWidth(Config):
-    """
-    Output image width in pixels.
-    Minimum 100, maximum 4096.
-    """
     name: Literal["OutputWidth"] = "OutputWidth"
     value: int = Field(default=800, ge=100, le=4096)
     type: Literal["number"] = "number"
@@ -84,10 +61,6 @@ class OutputWidth(Config):
 
 
 class OutputHeight(Config):
-    """
-    Output image height in pixels.
-    Minimum 100, maximum 4096.
-    """
     name: Literal["OutputHeight"] = "OutputHeight"
     value: int = Field(default=600, ge=100, le=4096)
     type: Literal["number"] = "number"
@@ -96,46 +69,15 @@ class OutputHeight(Config):
     class Config:
         title = "Output Height (px)"
 
-class AutoPerspective(Config):
-
-    name: Literal["Auto"] = "Auto"
-    value: str = Field(default="Auto")
-    type: Literal["string"] = "string"
-    field: Literal["option"] = "option"
-    class Config:
-        title = "Auto"
-
-
-class AdvancedPerspective(Config):
-
-    name: Literal["Advanced"] = "Advanced"
-    value: str = Field(default="Advanced")
-    type: Literal["string"] = "string"
-    field: Literal["option"] = "option"
-    class Config:
-        title = "Advanced"
-
-
-
-class PerspectiveTypeMode(Config):
-    name: Literal["PerspectiveTypeMode"] = "PerspectiveTypeMode"
-    value: Union[AutoPerspective,AdvancedPerspective]
-    type: Literal["object"] = "object"
-    field: Literal["dependentDropdownlist"] = "dependentDropdownlist"
-    class Config:
-        title = "Perspective Type"
-
 
 class PerspectiveTransformationInputs(Inputs):
     inputImage: InputImage
 
 
 class PerspectiveTransformationConfigs(Configs):
-    PerspectiveTypeMode:PerspectiveTypeMode
     drawBBox: KeepSideBBox
     outputWidth: OutputWidth
     outputHeight: OutputHeight
-
 
 
 class PerspectiveTransformationOutputs(Outputs):
@@ -173,9 +115,9 @@ class PerspectiveTransformationExecutor(Config):
 
 class ConfigExecutor(Config):
     name: Literal["ConfigExecutor"] = "ConfigExecutor"
-    value: Union[PerspectiveTransformationExecutor]
+    value: PerspectiveTransformationExecutor  # Union değil artık
     type: Literal["executor"] = "executor"
-    field: Literal["dependentDropdownlist"] = "dependentDropdownlist"
+    field: Literal["option"] = "option"  # ✅ en kritik değişiklik burada
 
     class Config:
         title = "Task"
