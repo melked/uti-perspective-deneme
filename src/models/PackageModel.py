@@ -1,9 +1,6 @@
 from pydantic import Field, validator
-from typing import List, Optional, Literal, Union
-from sdks.novavision.src.base.model import (
-    Package, Image, Inputs, Configs, Outputs,
-    Response, Request, Output, Input, Config
-)
+from typing import List, Optional, Union, Literal
+from sdks.novavision.src.base.model import Package, Image, Inputs, Configs, Outputs, Response, Request, Output, Input, Config
 
 
 class InputImage(Input):
@@ -40,17 +37,44 @@ class OutputImage(Output):
         title = "Image"
 
 
-class KeepSideBBox(Config):
-    name: Literal["KeepSide"] = "KeepSide"
-    value: bool = False  # Auto modda genelde kapalı olabilir
+class KeepSideFalse(Config):
+    name: Literal["False"] = "False"
+    value: Literal[False] = False
     type: Literal["bool"] = "bool"
     field: Literal["option"] = "option"
+
+    class Config:
+        title = "Disable"
+
+
+class KeepSideTrue(Config):
+    name: Literal["True"] = "True"
+    value: Literal[True] = True
+    type: Literal["bool"] = "bool"
+    field: Literal["option"] = "option"
+
+    class Config:
+        title = "Enable"
+
+
+class KeepSideBBox(Config):
+    """
+    output ölçüleri için.
+    """
+    name: Literal["KeepSide"] = "KeepSide"
+    value: Union[KeepSideTrue, KeepSideFalse]
+    type: Literal["object"] = "object"
+    field: Literal["dropdownlist"] = "dropdownlist"
 
     class Config:
         title = "Keep Sides"
 
 
 class OutputWidth(Config):
+    """
+    Output image width in pixels.
+    Minimum 100, maximum 4096.
+    """
     name: Literal["OutputWidth"] = "OutputWidth"
     value: int = Field(default=800, ge=100, le=4096)
     type: Literal["number"] = "number"
@@ -61,6 +85,10 @@ class OutputWidth(Config):
 
 
 class OutputHeight(Config):
+    """
+    Output image height in pixels.
+    Minimum 100, maximum 4096.
+    """
     name: Literal["OutputHeight"] = "OutputHeight"
     value: int = Field(default=600, ge=100, le=4096)
     type: Literal["number"] = "number"
@@ -115,9 +143,9 @@ class PerspectiveTransformationExecutor(Config):
 
 class ConfigExecutor(Config):
     name: Literal["ConfigExecutor"] = "ConfigExecutor"
-    value: PerspectiveTransformationExecutor  # Union değil artık
+    value: PerspectiveTransformationExecutor
     type: Literal["executor"] = "executor"
-    field: Literal["option"] = "option"  # ✅ en kritik değişiklik burada
+    field: Literal["option"] = "option"
 
     class Config:
         title = "Task"
