@@ -3,6 +3,7 @@ import sys
 from itertools import combinations
 import cv2
 import numpy as np
+# from sklearn.cluster import KMeans # KMeans için gerekli - Kaldırıldı
 
 # Sistem yolunu güncelleyin
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../../../"))
@@ -13,7 +14,7 @@ from sdks.novavision.src.helper.executor import Executor
 from components.PerspectiveTransformation.src.models.PackageModel import PackageModel
 from components.PerspectiveTransformation.src.utils.response import build_response
 
-# Yardımcı fonksiyonlar (sınıfın dışında kalacak)
+# Yardımcı fonksiyonlar (sınıfın dışında kalacak - bunlar zaten Canvas'ta vardı)
 def order_points(pts):
     # Noktaları numpy dizisine çevir
     pts = np.array(pts)
@@ -107,6 +108,7 @@ def to_cartesian(img, lines):
 def select_outermost_corners(points, k=4):
     """
     Verilen noktalardan en dıştaki k (varsayılan 4) köşeyi seçer.
+    K-Means yerine basit geometrik yaklaşımla en uzak noktaları bulur.
     """
     if len(points) <= k:
         return points.astype(np.float32)
@@ -118,6 +120,7 @@ def select_outermost_corners(points, k=4):
     distances = np.linalg.norm(points - centroid, axis=1)
 
     # En uzak k noktayı seç
+    # Argumenleri azalan sırada sırala ve ilk k indeksi al
     outermost_indices = np.argsort(distances)[-k:]
 
     return points[outermost_indices].astype(np.float32)
@@ -212,7 +215,9 @@ class PerspectiveTransformation(Component):
         super().__init__(request, bootstrap)
         self.context = {}
 
+        # self.request.data'nın bir sözlük olduğundan emin olun ve PackageModel'i güvenle başlatın
         if not isinstance(self.request.data, dict):
+            # print(f"UYARI: self.request.data bir sözlük değil, tipi: {type(self.request.data)}. Boş bir sözlük kullanılıyor.")
             model_data = {}
         else:
             model_data = self.request.data
@@ -221,11 +226,14 @@ class PerspectiveTransformation(Component):
             self.request.model = PackageModel(**model_data)
         except TypeError as e:
             print(f"HATA: PackageModel başlatılırken TypeError oluştu: {e}")
+            # print(f"self.request.data içeriği: {model_data}")
             raise RuntimeError("PackageModel başlatılamadı, lütfen request.data'yı kontrol edin.") from e
         except Exception as e:
             print(f"HATA: PackageModel başlatılırken beklenmeyen bir hata oluştu: {e}")
+            # print(f"self.request.data içeriği: {model_data}")
             raise RuntimeError("PackageModel başlatılamadı.") from e
 
+        # inputImage parametresini güvenle alın
         try:
             self.image = self.request.get_param("inputImage")
             if self.image is None:
@@ -237,12 +245,10 @@ class PerspectiveTransformation(Component):
             print(f"HATA: 'inputImage' parametresi alınırken beklenmeyen bir hata oluştu: {e}")
             raise RuntimeError("'inputImage' parametresi alınamadı.") from e
 
-        # PackageModel'den konfigürasyonları alın
-        self.perspective_type_mode = getattr(self.request.model.configs.PerspectiveTypeMode.value, 'value', 'Auto')
-        self.keep_side = getattr(self.request.model.configs.drawBBox.value, 'value', True) # drawBBox'tan keep_side
-        self.output_width = getattr(self.request.model.configs.outputWidth, 'value', None)
-        self.output_height = getattr(self.request.model.configs.outputHeight, 'value', None)
-
+        # PackageModel'den keep_side ve warp_image_flag değerlerini alın
+        # Eğer PackageModel'de bu özellikler yoksa varsayılan değerler atayın
+        self.keep_side = getattr(self.request.model, 'keep_side', 'auto') # Varsayılan değer 'auto'
+        self.warp_image_flag = getattr(self.request.model, 'warp_image', True) # Varsayılan değer True
 
     @staticmethod
     def bootstrap(config: dict) -> dict:
@@ -353,7 +359,8 @@ class PerspectiveTransformation(Component):
         result = cv2.cvtColor(norm_img, cv2.COLOR_GRAY2BGR)
         return result
 
-    def _perform_single_perspective_correction(self, img,
+    # ----- ANA PERSPEKTİF DÜZELTME METODU (Tek Deneme) -----
+    def _correct_perspective_single_try(self, img,
                                         threshold_max=140,
                                         threshold_min=30,
                                         median_blur_size=51,
@@ -367,8 +374,7 @@ class PerspectiveTransformation(Component):
                                         deblur=False,
                                         use_adaptive_thresholding=False,
                                         edge_detector='canny',
-                                        blur_method='median',
-                                        target_output_size=None): # Yeni parametre
+                                        blur_method='median'):
 
         # Ön işleme
         if small_image_preprocess:
@@ -431,203 +437,185 @@ class PerspectiveTransformation(Component):
         if len(intersections) < 4:
             raise ValueError("Yeterli kesişim noktası bulunamadı.")
 
+        # K-means yerine select_outermost_corners kullanıldı
         corners = select_outermost_corners(intersections, k=4)
 
         # Köşeleri sırala
         src_quad = reorder_corners(corners)
 
-        # Hedef boyutunu kullan veya dinamik olarak hesapla
-        if target_output_size:
-            new_w, new_h = target_output_size
+        # Hedef boyut hesaplama (A4 oranı yaklaşık 0.707)
+        h_img, w_img = img.shape[:2]
+        min_dim = min(h_img, w_img)
+        if h_img > w_img:
+            new_h, new_w = int(min_dim), int(min_dim * 0.707)
         else:
-            h_img, w_img = img.shape[:2]
-            min_dim = min(h_img, w_img)
-            if h_img > w_img:
-                new_h, new_w = int(min_dim), int(min_dim * 0.707)
-            else:
-                new_h, new_w = int(min_dim * 0.707), int(min_dim)
+            new_h, new_w = int(min_dim * 0.707), int(min_dim)
 
         output_size = (new_w, new_h)
         destination = np.array([[0,0], [new_w,0], [new_w,new_h], [0,new_h]], dtype=np.float32)
         M = cv2.getPerspectiveTransform(src_quad, destination)
         corrected = cv2.warpPerspective(img, M, output_size)
 
+        # Düzeltilmiş görüntüyü, kaynak köşeleri ve çıktı boyutunu döndürün
         return corrected, src_quad, output_size
 
     def _apply_perspective(self, src_img: np.ndarray):
         """
         Görüntüye gelişmiş perspektif düzeltme uygular.
-        Seçilen moda göre farklı parametre kombinasyonlarını veya tek bir denemeyi kullanır.
+        Farklı parametre kombinasyonlarını dener ve başarılı olan ilkini döndürür.
         Orijinal ve negatif görüntü üzerinde denemeler yapar.
         """
         original_image_error = None
         negative_image_error = None
 
-        target_output_size = None
-        if self.output_width is not None and self.output_height is not None:
-            target_output_size = (self.output_width, self.output_height)
+        def try_all_tries_internal(image_to_process):
+            """İç yardımcı fonksiyon: Belirli bir görüntü üzerinde tüm denemeleri yapar."""
+            # Denenecek parametre kombinasyonları
+            prioritized_tries = [
+                {"threshold_max": 150, "threshold_min": 50, "median_blur_size": 51, "aggressive_preprocess": False, "small_image_preprocess": False, "deblur": False, "use_adaptive_thresholding": False, "edge_detector": 'canny', "threshold_intersect": 150, "rho": 1, "theta": np.pi/180, "blur_method": 'median'},
+                {"threshold_max": 100, "threshold_min": 30, "median_blur_size": 31, "aggressive_preprocess": False, "small_image_preprocess": False, "deblur": False, "use_adaptive_thresholding": False, "edge_detector": 'canny', "threshold_intersect": 100, "rho": 1, "theta": np.pi/180, "blur_method": 'median'},
+                {"threshold_max": 200, "threshold_min": 80, "median_blur_size": 61, "aggressive_preprocess": False, "small_image_preprocess": False, "deblur": True, "use_adaptive_thresholding": False, "edge_detector": 'canny', "threshold_intersect": 200, "rho": 1, "theta": np.pi/180, "blur_method": 'median'},
+                {"median_blur_size": 51, "aggressive_preprocess": False, "small_image_preprocess": False, "deblur": False, "use_adaptive_thresholding": True, "edge_detector": 'canny', "threshold_intersect": 150, "rho": 1, "theta": np.pi/180, "blur_method": 'median'},
+                {"median_blur_size": 31, "aggressive_preprocess": True, "small_image_preprocess": False, "deblur": False, "use_adaptive_thresholding": True, "edge_detector": 'canny', "threshold_intersect": 100, "rho": 1, "theta": np.pi/180, "blur_method": 'median'},
+                {"threshold_max": 150, "threshold_min": 50, "median_blur_size": 51, "aggressive_preprocess": False, "small_image_preprocess": False, "deblur": False, "use_adaptive_thresholding": False, "edge_detector": 'sobel', "threshold_intersect": 150, "rho": 1, "theta": np.pi/180, "blur_method": 'median'},
+                {"threshold_max": 200, "threshold_min": 80, "median_blur_size": 61, "aggressive_preprocess": False, "small_image_preprocess": False, "deblur": True, "use_adaptive_thresholding": False, "edge_detector": 'sobel', "threshold_intersect": 200, "rho": 1, "theta": np.pi/180, "blur_method": 'median'},
+                {"median_blur_size": 0, "aggressive_preprocess": False, "small_image_preprocess": False, "deblur": False, "use_adaptive_thresholding": False, "edge_detector": 'canny', "threshold_intersect": 150, "rho": 1, "theta": np.pi/180, "blur_method": 'bilateral'},
+                {"median_blur_size": 0, "aggressive_preprocess": False, "small_image_preprocess": False, "deblur": False, "use_adaptive_thresholding": True, "edge_detector": 'canny', "threshold_intersect": 150, "rho": 1, "theta": np.pi/180, "blur_method": 'bilateral'},
+            ]
 
-        if self.perspective_type_mode == 'Auto':
-            def try_all_tries_internal(image_to_process):
-                """İç yardımcı fonksiyon: Belirli bir görüntü üzerinde tüm denemeleri yapar."""
-                prioritized_tries = [
-                    {"threshold_max": 150, "threshold_min": 50, "median_blur_size": 51, "aggressive_preprocess": False, "small_image_preprocess": False, "deblur": False, "use_adaptive_thresholding": False, "edge_detector": 'canny', "threshold_intersect": 150, "rho": 1, "theta": np.pi/180, "blur_method": 'median'},
-                    {"threshold_max": 100, "threshold_min": 30, "median_blur_size": 31, "aggressive_preprocess": False, "small_image_preprocess": False, "deblur": False, "use_adaptive_thresholding": False, "edge_detector": 'canny', "threshold_intersect": 100, "rho": 1, "theta": np.pi/180, "blur_method": 'median'},
-                    {"threshold_max": 200, "threshold_min": 80, "median_blur_size": 61, "aggressive_preprocess": False, "small_image_preprocess": False, "deblur": True, "use_adaptive_thresholding": False, "edge_detector": 'canny', "threshold_intersect": 200, "rho": 1, "theta": np.pi/180, "blur_method": 'median'},
-                    {"median_blur_size": 51, "aggressive_preprocess": False, "small_image_preprocess": False, "deblur": False, "use_adaptive_thresholding": True, "edge_detector": 'canny', "threshold_intersect": 150, "rho": 1, "theta": np.pi/180, "blur_method": 'median'},
-                    {"median_blur_size": 31, "aggressive_preprocess": True, "small_image_preprocess": False, "deblur": False, "use_adaptive_thresholding": True, "edge_detector": 'canny', "threshold_intersect": 100, "rho": 1, "theta": np.pi/180, "blur_method": 'median'},
-                    {"threshold_max": 150, "threshold_min": 50, "median_blur_size": 51, "aggressive_preprocess": False, "small_image_preprocess": False, "deblur": False, "use_adaptive_thresholding": False, "edge_detector": 'sobel', "threshold_intersect": 150, "rho": 1, "theta": np.pi/180, "blur_method": 'median'},
-                    {"threshold_max": 200, "threshold_min": 80, "median_blur_size": 61, "aggressive_preprocess": False, "small_image_preprocess": False, "deblur": True, "use_adaptive_thresholding": False, "edge_detector": 'sobel', "threshold_intersect": 200, "rho": 1, "theta": np.pi/180, "blur_method": 'median'},
-                    {"median_blur_size": 0, "aggressive_preprocess": False, "small_image_preprocess": False, "deblur": False, "use_adaptive_thresholding": False, "edge_detector": 'canny', "threshold_intersect": 150, "rho": 1, "theta": np.pi/180, "blur_method": 'bilateral'},
-                    {"median_blur_size": 0, "aggressive_preprocess": False, "small_image_preprocess": False, "deblur": False, "use_adaptive_thresholding": True, "edge_detector": 'canny', "threshold_intersect": 150, "rho": 1, "theta": np.pi/180, "blur_method": 'bilateral'},
-                ]
+            broad_tries = []
+            # Canny Edge Detector tries
+            for threshold_max in range(20, 201, 20):
+                for threshold_min in range(5, threshold_max // 2 + 1, 5):
+                    for median_blur_size in [3, 5, 7, 11, 21, 31, 41, 51, 61]:
+                        for aggressive_preprocess in [False, True]:
+                            for small_image_preprocess in [False, True]:
+                                for deblur in [False, True]:
+                                    for threshold_intersect in range(50, 301, 50):
+                                        for rho in [1, 0.5]:
+                                            for theta in [np.pi/180, np.pi/360]:
+                                                for blur_method in ['median', 'bilateral']:
+                                                    params = {
+                                                        "threshold_max": threshold_max,
+                                                        "threshold_min": threshold_min,
+                                                        "median_blur_size": median_blur_size,
+                                                        "aggressive_preprocess": aggressive_preprocess,
+                                                        "small_image_preprocess": small_image_preprocess,
+                                                        "deblur": deblur,
+                                                        "use_adaptive_thresholding": False,
+                                                        "edge_detector": 'canny',
+                                                        "threshold_intersect": threshold_intersect,
+                                                        "rho": rho,
+                                                        "theta": theta,
+                                                        "blur_method": blur_method
+                                                    }
+                                                    if params not in prioritized_tries:
+                                                        broad_tries.append(params)
 
-                broad_tries = []
-                for threshold_max in range(20, 201, 20):
-                    for threshold_min in range(5, threshold_max // 2 + 1, 5):
-                        for median_blur_size in [3, 5, 7, 11, 21, 31, 41, 51, 61]:
-                            for aggressive_preprocess in [False, True]:
-                                for small_image_preprocess in [False, True]:
-                                    for deblur in [False, True]:
-                                        for threshold_intersect in range(50, 301, 50):
-                                            for rho in [1, 0.5]:
-                                                for theta in [np.pi/180, np.pi/360]:
-                                                    for blur_method in ['median', 'bilateral']:
-                                                        params = {
-                                                            "threshold_max": threshold_max,
-                                                            "threshold_min": threshold_min,
-                                                            "median_blur_size": median_blur_size,
-                                                            "aggressive_preprocess": aggressive_preprocess,
-                                                            "small_image_preprocess": small_image_preprocess,
-                                                            "deblur": deblur,
-                                                            "use_adaptive_thresholding": False,
-                                                            "edge_detector": 'canny',
-                                                            "threshold_intersect": threshold_intersect,
-                                                            "rho": rho,
-                                                            "theta": theta,
-                                                            "blur_method": blur_method
-                                                        }
-                                                        if params not in prioritized_tries:
-                                                            broad_tries.append(params)
+            # Adaptive Thresholding tries
+            for median_blur_size in [3, 5, 7, 11, 21, 31, 41, 51, 61]:
+                 for aggressive_preprocess in [False, True]:
+                    for small_image_preprocess in [False, True]:
+                        for deblur in [False, True]:
+                             for threshold_intersect in range(50, 301, 50):
+                                for rho in [1, 0.5]:
+                                    for theta in [np.pi/180, np.pi/360]:
+                                         for blur_method in ['median', 'bilateral']:
+                                            params = {
+                                                "median_blur_size": median_blur_size,
+                                                "aggressive_preprocess": aggressive_preprocess,
+                                                "small_image_preprocess": small_image_preprocess,
+                                                "deblur": deblur,
+                                                "use_adaptive_thresholding": True,
+                                                "edge_detector": 'canny', # Edge detector is ignored for adaptive thresholding
+                                                "threshold_intersect": threshold_intersect,
+                                                "rho": rho,
+                                                "theta": theta,
+                                                "blur_method": blur_method
+                                            }
+                                            if params not in prioritized_tries:
+                                                broad_tries.append(params)
 
-                for median_blur_size in [3, 5, 7, 11, 21, 31, 41, 51, 61]:
-                     for aggressive_preprocess in [False, True]:
-                        for small_image_preprocess in [False, True]:
-                            for deblur in [False, True]:
-                                 for threshold_intersect in range(50, 301, 50):
-                                    for rho in [1, 0.5]:
-                                        for theta in [np.pi/180, np.pi/360]:
-                                             for blur_method in ['median', 'bilateral']:
-                                                params = {
-                                                    "median_blur_size": median_blur_size,
-                                                    "aggressive_preprocess": aggressive_preprocess,
-                                                    "small_image_preprocess": small_image_preprocess,
-                                                    "deblur": deblur,
-                                                    "use_adaptive_thresholding": True,
-                                                    "edge_detector": 'canny',
-                                                    "threshold_intersect": threshold_intersect,
-                                                    "rho": rho,
-                                                    "theta": theta,
-                                                    "blur_method": blur_method
-                                                }
-                                                if params not in prioritized_tries:
-                                                    broad_tries.append(params)
+            # Sobel Edge Detector tries
+            for threshold_min in range(5, 51, 5):
+                for threshold_max in range(threshold_min + 10, 256, 10):
+                    for median_blur_size in [3, 5, 7, 11, 21, 31, 41, 51, 61]:
+                        for aggressive_preprocess in [False, True]:
+                            for small_image_preprocess in [False, True]:
+                                for deblur in [False, True]:
+                                    for threshold_intersect in range(50, 301, 50):
+                                        for rho in [1, 0.5]:
+                                            for theta in [np.pi/180, np.pi/360]:
+                                                for blur_method in ['median', 'bilateral']:
+                                                    params = {
+                                                        "threshold_max": threshold_max,
+                                                        "threshold_min": threshold_min,
+                                                        "median_blur_size": median_blur_size,
+                                                        "aggressive_preprocess": aggressive_preprocess,
+                                                        "small_image_preprocess": small_image_preprocess,
+                                                        "deblur": deblur,
+                                                        "use_adaptive_thresholding": False,
+                                                        "edge_detector": 'sobel',
+                                                        "threshold_intersect": threshold_intersect,
+                                                        "rho": rho,
+                                                        "theta": theta,
+                                                        "blur_method": blur_method
+                                                    }
+                                                    if params not in prioritized_tries:
+                                                        broad_tries.append(params)
 
-                for threshold_min in range(5, 51, 5):
-                    for threshold_max in range(threshold_min + 10, 256, 10):
-                        for median_blur_size in [3, 5, 7, 11, 21, 31, 41, 51, 61]:
-                            for aggressive_preprocess in [False, True]:
-                                for small_image_preprocess in [False, True]:
-                                    for deblur in [False, True]:
-                                        for threshold_intersect in range(50, 301, 50):
-                                            for rho in [1, 0.5]:
-                                                for theta in [np.pi/180, np.pi/360]:
-                                                    for blur_method in ['median', 'bilateral']:
-                                                        params = {
-                                                            "threshold_max": threshold_max,
-                                                            "threshold_min": threshold_min,
-                                                            "median_blur_size": median_blur_size,
-                                                            "aggressive_preprocess": aggressive_preprocess,
-                                                            "small_image_preprocess": small_image_preprocess,
-                                                            "deblur": deblur,
-                                                            "use_adaptive_thresholding": False,
-                                                            "edge_detector": 'sobel',
-                                                            "threshold_intersect": threshold_intersect,
-                                                            "rho": rho,
-                                                            "theta": theta,
-                                                            "blur_method": blur_method
-                                                        }
-                                                        if params not in prioritized_tries:
-                                                            broad_tries.append(params)
+            all_tries = prioritized_tries + broad_tries
 
-                all_tries = prioritized_tries + broad_tries
+            for i, params in enumerate(all_tries):
+                try:
+                    corrected_image, src_quad, output_size = self._correct_perspective_single_try(
+                        image_to_process,
+                        threshold_max=params.get("threshold_max", 140),
+                        threshold_min=params.get("threshold_min", 30),
+                        median_blur_size=params.get("median_blur_size", 51),
+                        rho=params.get("rho", 1),
+                        theta=params.get("theta", np.pi/180),
+                        threshold_intersect=params.get("threshold_intersect", 250),
+                        aggressive_preprocess=params.get("aggressive_preprocess", False),
+                        small_image_preprocess=params.get("small_image_preprocess", False),
+                        deblur=params.get("deblur", False),
+                        use_adaptive_thresholding=params.get("use_adaptive_thresholding", False),
+                        edge_detector=params.get("edge_detector", 'canny'),
+                        blur_method=params.get("blur_method", 'median')
+                    )
+                    return corrected_image, src_quad, output_size
+                except Exception: # Hata mesajını yakala ama bastır
+                    continue # Bir sonraki denemeye geç
+            raise RuntimeError("Tüm denemeler başarısız oldu.")
 
-                for params in all_tries:
-                    try:
-                        corrected_image, src_quad, output_size = self._perform_single_perspective_correction(
-                            image_to_process,
-                            threshold_max=params.get("threshold_max", 140),
-                            threshold_min=params.get("threshold_min", 30),
-                            median_blur_size=params.get("median_blur_size", 51),
-                            rho=params.get("rho", 1),
-                            theta=params.get("theta", np.pi/180),
-                            threshold_intersect=params.get("threshold_intersect", 250),
-                            aggressive_preprocess=params.get("aggressive_preprocess", False),
-                            small_image_preprocess=params.get("small_image_preprocess", False),
-                            deblur=params.get("deblur", False),
-                            use_adaptive_thresholding=params.get("use_adaptive_thresholding", False),
-                            edge_detector=params.get("edge_detector", 'canny'),
-                            blur_method=params.get("blur_method", 'median'),
-                            target_output_size=target_output_size
-                        )
-                        return corrected_image, src_quad, output_size
-                    except Exception:
-                        continue
-                raise RuntimeError("Tüm denemeler başarısız oldu.")
+        try:
+            warped, src_quad, output_size = try_all_tries_internal(src_img)
+            corrected_boxes = []
+            return warped, corrected_boxes, src_quad, output_size
+        except RuntimeError as e:
+            original_image_error = str(e) # Orijinal görüntü denemelerinin hatasını kaydet
+            # print(f"Orijinal görüntü başarısız: {e}") # Bu satır artık yazdırılmayacak
 
-            # Orijinal görüntü ile deneme
-            try:
-                warped, src_quad, output_size = try_all_tries_internal(src_img)
-                corrected_boxes = []
-                return warped, corrected_boxes, src_quad, output_size
-            except RuntimeError as e:
-                original_image_error = str(e)
+        img_neg = cv2.bitwise_not(src_img)
+        try:
+            warped, src_quad, output_size = try_all_tries_internal(img_neg)
+            corrected_boxes = []
+            return warped, corrected_boxes, src_quad, output_size
+        except RuntimeError as e:
+            negative_image_error = str(e) # Negatif görüntü denemelerinin hatasını kaydet
+            # print(f"Negatif görüntü başarısız: {e}") # Bu satır artık yazdırılmayacak
 
-            # Negatif görüntü ile deneme
-            img_neg = cv2.bitwise_not(src_img)
-            try:
-                warped, src_quad, output_size = try_all_tries_internal(img_neg)
-                corrected_boxes = []
-                return warped, corrected_boxes, src_quad, output_size
-            except RuntimeError as e:
-                negative_image_error = str(e)
-
-            error_message = "Perspektif düzeltme hem orijinal hem de negatif görüntüde başarısız oldu."
-            if original_image_error:
-                error_message += f"\nOrijinal görüntü hatası: {original_image_error}"
-            if negative_image_error:
-                error_message += f"\nNegatif görüntü hatası: {negative_image_error}"
-            raise RuntimeError(error_message)
-
-        elif self.perspective_type_mode == 'Advanced':
-            # Advanced mod için tek bir deneme
-            try:
-                warped, src_quad, output_size = self._perform_single_perspective_correction(
-                    src_img,
-                    # Advanced mod için varsayılan veya PackageModel'den alınabilecek parametreler
-                    # Şu an PackageModel'de bu parametreler exposed olmadığı için varsayılanlar kullanılıyor.
-                    # Eğer ek parametreler eklenirse, buradan okunabilir.
-                    target_output_size=target_output_size
-                )
-                corrected_boxes = []
-                return warped, corrected_boxes, src_quad, output_size
-            except Exception as e:
-                raise RuntimeError(f"Advanced modda perspektif düzeltme başarısız oldu: {e}")
-        else:
-            raise ValueError(f"Bilinmeyen perspektif tipi modu: {self.perspective_type_mode}")
+        # Her iki deneme de başarısız olursa, daha açıklayıcı bir hata fırlat
+        error_message = "Perspektif düzeltme hem orijinal hem de negatif görüntüde başarısız oldu."
+        if original_image_error:
+            error_message += f"\nOrijinal görüntü hatası: {original_image_error}"
+        if negative_image_error:
+            error_message += f"\nNegatif görüntü hatası: {negative_image_error}"
+        raise RuntimeError(error_message)
 
 
     def run(self) -> Image:
+        # self.image, __init__ içinde zaten ayarlanmıştır
         img = Image.get_frame(img=self.image, redis_db=self.redis_db)
         if img is None or img.value is None:
             raise ValueError("No input image provided or failed to load.")
@@ -645,7 +633,7 @@ class PerspectiveTransformation(Component):
             "output_size": [out_w, out_h],
             "corrected_boxes": corrected_boxes,
             "keep_side": self.keep_side,
-            "warp_image": self.warp_image_flag, # Bu bayrak hala kullanılıyor mu kontrol edilebilir
+            "warp_image": self.warp_image_flag,
         }
         return build_response(context=self)
 
