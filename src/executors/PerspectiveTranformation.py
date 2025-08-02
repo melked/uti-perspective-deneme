@@ -53,7 +53,7 @@ def reorder_corners(corners):
     new_corners[0] = corners[np.argmin(s)]      # üst sol
     new_corners[2] = corners[np.argmax(s)]      # alt sağ
     new_corners[1] = corners[np.argmin(diff)]   # üst sağ
-    new_corners[3] = corners[np.argmax(diff)]   # Sol alt
+    new_corners[3] = corners[np.argmax(diff)]   # alt sol
     return new_corners
 
 def filter_perpendicular(lines, margin=np.pi/18):
@@ -145,7 +145,7 @@ def get_corners_from_contours(contours):
 
 def detect_corners_shi_tomasi(img_gray, maxCorners=100, qualityLevel=0.01, minDistance=10):
     """Shi-Tomasi köşe tespit yöntemi"""
-    corners = cv2.goodFeaturesToTrack(img_gray, maxCorners=maxCorners, qualityLevel=qualityLevel, minDistance=10)
+    corners = cv2.goodFeaturesToTrack(img_gray, maxCorners=maxCorners, qualityLevel=qualityLevel, minDistance=minDistance)
     if corners is not None:
         return np.float32(corners).reshape(-1, 2)
     return np.array([], dtype=np.float32)
@@ -226,17 +226,16 @@ class PerspectiveTransformation(Component):
             print(f"HATA: PackageModel başlatılırken beklenmeyen bir hata oluştu: {e}")
             raise RuntimeError("PackageModel başlatılamadı.") from e
 
-        # inputImage parametresini __init__ içinde artık almıyoruz, run metodu alacak
-        # try:
-        #     self.image = self.request.get_param("inputImage")
-        #     if self.image is None:
-        #         print("UYARI: 'inputImage' parametresi bulunamadı veya değeri None.")
-        # except AttributeError:
-        #     print("HATA: 'request' nesnesinin 'get_param' metodu yok.")
-        #     raise RuntimeError("Request nesnesi geçersiz, 'get_param' metodu eksik.")
-        # except Exception as e:
-        #     print(f"HATA: 'inputImage' parametresi alınırken beklenmeyen bir hata oluştu: {e}")
-        #     raise RuntimeError("'inputImage' parametresi alınamadı.") from e
+        try:
+            self.image = self.request.get_param("inputImage")
+            if self.image is None:
+                print("UYARI: 'inputImage' parametresi bulunamadı veya değeri None.")
+        except AttributeError:
+            print("HATA: 'request' nesnesinin 'get_param' metodu yok.")
+            raise RuntimeError("Request nesnesi geçersiz, 'get_param' metodu eksik.")
+        except Exception as e:
+            print(f"HATA: 'inputImage' parametresi alınırken beklenmeyen bir hata oluştu: {e}")
+            raise RuntimeError("'inputImage' parametresi alınamadı.") from e
 
         # PackageModel'den konfigürasyonları alın
         self.perspective_type_mode = getattr(self.request.model.configs.PerspectiveTypeMode.value, 'value', 'Auto')
@@ -628,29 +627,25 @@ class PerspectiveTransformation(Component):
             raise ValueError(f"Bilinmeyen perspektif tipi modu: {self.perspective_type_mode}")
 
 
-    def run(self, image: Image) -> Image: # 'image' parametresi eklendi
-        # Executor'dan gelen 'image' parametresini kullanın
-        img = Image.get_frame(img=image, redis_db=self.redis_db)
+    def run(self) -> Image:
+        img = Image.get_frame(img=self.image, redis_db=self.redis_db)
         if img is None or img.value is None:
             raise ValueError("No input image provided or failed to load.")
 
         src_img = self._prepare_image(img.value)
 
+        # _apply_perspective metodunu çağırın. Bu metod artık run'ın beklediği tüm değerleri döndürüyor.
         warped, corrected_boxes, src_quad, (out_w, out_h) = self._apply_perspective(src_img)
 
         img.value = warped
-        # self.image, __init__ içinde ayarlanmadığı için burada yeniden set etmeye gerek yok
-        # Ancak, PackageModel'den gelen inputImage'ı referans olarak tutmak isterseniz:
-        self.image = image # Gelen image objesini self.image'a atayın
         self.image = Image.set_frame(img=img, package_uID=self.uID, redis_db=self.redis_db)
-
 
         self.context = {
             "src_quad": src_quad.tolist(),
             "output_size": [out_w, out_h],
             "corrected_boxes": corrected_boxes,
             "keep_side": self.keep_side,
-            "warp_image": self.warp_image_flag,
+            "warp_image": self.warp_image_flag, # Bu bayrak hala kullanılıyor mu kontrol edilebilir
         }
         return build_response(context=self)
 

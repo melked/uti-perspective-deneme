@@ -171,19 +171,17 @@ class PerspectiveTransformationExecutor(Config):
         }
 
 
-
 class ConfigExecutor(Config):
     name: Literal["ConfigExecutor"] = "ConfigExecutor"
-    value: PerspectiveTransformationExecutor
+    value: Union[PerspectiveTransformationExecutor]
     type: Literal["executor"] = "executor"
-    field: Literal["option"] = "option"
+    field: Literal["dependentDropdownlist"] = "dependentDropdownlist"
 
     class Config:
         title = "Task"
         json_schema_extra = {
             "target": "value"
         }
-
 
 
 class PackageConfigs(Configs):
