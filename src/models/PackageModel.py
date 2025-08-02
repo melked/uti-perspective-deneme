@@ -171,11 +171,12 @@ class PerspectiveTransformationExecutor(Config):
         }
 
 
+
 class ConfigExecutor(Config):
     name: Literal["ConfigExecutor"] = "ConfigExecutor"
-    value: Union[PerspectiveTransformationExecutor]
+    value: PerspectiveTransformationExecutor
     type: Literal["executor"] = "executor"
-    field: Literal["dependentDropdownlist"] = "dependentDropdownlist"
+    field: Literal["option"] = "option"
 
     class Config:
         title = "Task"
