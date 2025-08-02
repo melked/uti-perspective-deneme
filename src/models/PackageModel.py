@@ -1,3 +1,4 @@
+
 from pydantic import Field, validator
 from typing import List, Optional, Union, Literal
 from sdks.novavision.src.base.model import Package, Image, Inputs, Configs, Outputs, Response, Request, Output, Input, Config
@@ -22,7 +23,7 @@ class InputImage(Input):
 
 class OutputImage(Output):
     name: Literal["outputImage"] = "outputImage"
-    value: Union[List[Image], Image]
+    value: Union[List[Image],Image]
     type: str = "object"
 
     @validator("type", pre=True, always=True)
@@ -35,7 +36,6 @@ class OutputImage(Output):
 
     class Config:
         title = "Image"
-
 
 class KeepSideFalse(Config):
     name: Literal["False"] = "False"
@@ -59,7 +59,7 @@ class KeepSideTrue(Config):
 
 class KeepSideBBox(Config):
     """
-    output ölçüleri için.
+       output olculeri icin.
     """
     name: Literal["KeepSide"] = "KeepSide"
     value: Union[KeepSideTrue, KeepSideFalse]
@@ -68,7 +68,6 @@ class KeepSideBBox(Config):
 
     class Config:
         title = "Keep Sides"
-
 
 class OutputWidth(Config):
     """
@@ -97,15 +96,46 @@ class OutputHeight(Config):
     class Config:
         title = "Output Height (px)"
 
+class AutoPerspective(Config):
+
+    name: Literal["Auto"] = "Auto"
+    value: str = Field(default="Auto")
+    type: Literal["string"] = "string"
+    field: Literal["option"] = "option"
+    class Config:
+        title = "Auto"
+
+
+class AdvancedPerspective(Config):
+
+    name: Literal["Advanced"] = "Advanced"
+    value: str = Field(default="Advanced")
+    type: Literal["string"] = "string"
+    field: Literal["option"] = "option"
+    class Config:
+        title = "Advanced"
+
+
+
+class PerspectiveTypeMode(Config):
+    name: Literal["PerspectiveTypeMode"] = "PerspectiveTypeMode"
+    value: Union[AutoPerspective,AdvancedPerspective]
+    type: Literal["object"] = "object"
+    field: Literal["dependentDropdownlist"] = "dependentDropdownlist"
+    class Config:
+        title = "Perspective Type"
+
 
 class PerspectiveTransformationInputs(Inputs):
     inputImage: InputImage
 
 
 class PerspectiveTransformationConfigs(Configs):
+    PerspectiveTypeMode:PerspectiveTypeMode
     drawBBox: KeepSideBBox
     outputWidth: OutputWidth
     outputHeight: OutputHeight
+
 
 
 class PerspectiveTransformationOutputs(Outputs):
@@ -143,9 +173,9 @@ class PerspectiveTransformationExecutor(Config):
 
 class ConfigExecutor(Config):
     name: Literal["ConfigExecutor"] = "ConfigExecutor"
-    value: PerspectiveTransformationExecutor
+    value: Union[PerspectiveTransformationExecutor]
     type: Literal["executor"] = "executor"
-    field: Literal["option"] = "option"
+    field: Literal["dependentDropdownlist"] = "dependentDropdownlist"
 
     class Config:
         title = "Task"
