@@ -3,6 +3,7 @@ import sys
 from itertools import combinations
 import cv2
 import numpy as np
+# from sklearn.cluster import KMeans # KMeans için gerekli - Kaldırıldı ARTIK TAMAMEN KALDIRILDI
 
 # Sistem yolunu güncelleyin
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../../../"))
@@ -226,17 +227,16 @@ class PerspectiveTransformation(Component):
             print(f"HATA: PackageModel başlatılırken beklenmeyen bir hata oluştu: {e}")
             raise RuntimeError("PackageModel başlatılamadı.") from e
 
-        # inputImage parametresini __init__ içinde artık almıyoruz, run metodu alacak
-        # try:
-        #     self.image = self.request.get_param("inputImage")
-        #     if self.image is None:
-        #         print("UYARI: 'inputImage' parametresi bulunamadı veya değeri None.")
-        # except AttributeError:
-        #     print("HATA: 'request' nesnesinin 'get_param' metodu yok.")
-        #     raise RuntimeError("Request nesnesi geçersiz, 'get_param' metodu eksik.")
-        # except Exception as e:
-        #     print(f"HATA: 'inputImage' parametresi alınırken beklenmeyen bir hata oluştu: {e}")
-        #     raise RuntimeError("'inputImage' parametresi alınamadı.") from e
+        # inputImage parametresini güvenle alın (artık run metoduna geçirilmiyor, self.image'dan alınıyor)
+        try:
+            # self.image = self.request.get_param("inputImage") # Bu satır run metoduna taşındı
+            pass # __init__ içinde self.image'ı burada ayarlamıyoruz, run metodu alacak
+        except AttributeError:
+            print("HATA: 'request' nesnesinin 'get_param' metodu yok.")
+            raise RuntimeError("Request nesnesi geçersiz, 'get_param' metodu eksik.")
+        except Exception as e:
+            print(f"HATA: 'inputImage' parametresi alınırken beklenmeyen bir hata oluştu: {e}")
+            raise RuntimeError("'inputImage' parametresi alınamadı.") from e
 
         # PackageModel'den konfigürasyonları alın
         self.perspective_type_mode = getattr(self.request.model.configs.PerspectiveTypeMode.value, 'value', 'Auto')
@@ -571,6 +571,7 @@ class PerspectiveTransformation(Component):
                             threshold_min=params.get("threshold_min", 30),
                             median_blur_size=params.get("median_blur_size", 51),
                             rho=params.get("rho", 1),
+                            # Hata burada düzeltildi: fazladan parantez kaldırıldı
                             theta=params.get("theta", np.pi/180),
                             threshold_intersect=params.get("threshold_intersect", 250),
                             aggressive_preprocess=params.get("aggressive_preprocess", False),
@@ -628,8 +629,7 @@ class PerspectiveTransformation(Component):
             raise ValueError(f"Bilinmeyen perspektif tipi modu: {self.perspective_type_mode}")
 
 
-    def run(self, image: Image) -> Image: # 'image' parametresi eklendi
-        # Executor'dan gelen 'image' parametresini kullanın
+    def run(self, image: Image) -> Image:
         img = Image.get_frame(img=image, redis_db=self.redis_db)
         if img is None or img.value is None:
             raise ValueError("No input image provided or failed to load.")
@@ -639,11 +639,7 @@ class PerspectiveTransformation(Component):
         warped, corrected_boxes, src_quad, (out_w, out_h) = self._apply_perspective(src_img)
 
         img.value = warped
-        # self.image, __init__ içinde ayarlanmadığı için burada yeniden set etmeye gerek yok
-        # Ancak, PackageModel'den gelen inputImage'ı referans olarak tutmak isterseniz:
-        self.image = image # Gelen image objesini self.image'a atayın
         self.image = Image.set_frame(img=img, package_uID=self.uID, redis_db=self.redis_db)
-
 
         self.context = {
             "src_quad": src_quad.tolist(),
