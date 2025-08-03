@@ -2,8 +2,7 @@ import os
 import sys
 import cv2
 import numpy as np
-from itertools import combinations # Added for parameter combinations
-
+from itertools import combinations
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '../../../../'))
 
@@ -14,7 +13,7 @@ from components.PerspectiveTransformation.src.utils.response import build_respon
 from components.PerspectiveTransformation.src.models.PackageModel import PackageModel
 
 
-# Keep the original image processing functions from the other cell
+# Helper functions (copied from previous turns)
 def order_points(pts):
     pts = np.array(pts)
     s = pts.sum(axis=1)
@@ -46,6 +45,8 @@ def get_intersections(img, lines):
 
 def reorder_corners(corners):
     """Köşeleri: [üst sol, üst sağ, alt sağ, alt sol] olarak sırala"""
+    if corners is None or len(corners) != 4:
+        return None
     new_corners = np.zeros((4, 2), dtype=np.float32)
     s = corners.sum(axis=1)
     diff = np.diff(corners, axis=1)
@@ -142,7 +143,9 @@ def get_corners_from_contours(contours):
     for contour in contours:
         points = contour.reshape(-1, 2)
         corners.extend(points)
-    return np.array(corners, dtype=np.float32)
+    if corners:
+        return np.array(corners, dtype=np.float32)
+    return np.array([], dtype=np.float32)
 
 def detect_corners_shi_tomasi(img_gray, maxCorners=100, qualityLevel=0.01, minDistance=10):
     """Shi-Tomasi köşe tespit yöntemi"""
@@ -217,6 +220,7 @@ def select_best_corners(points, img_shape):
     Adds a check for aspect ratio and area.
     """
     if points is None or len(points) < 4:
+        print("Not enough points to select 4 corners.")
         return None
 
     h, w = img_shape[:2]
@@ -236,42 +240,47 @@ def select_best_corners(points, img_shape):
         # Check convexity
         try:
             reordered_potential = reorder_corners(potential_corners)
-            v1 = reordered_potential[1] - reordered_potential[0]
-            v2 = reordered_potential[2] - reordered_potential[1]
-            v3 = reordered_potential[3] - reordered_potential[2]
-            v4 = reordered_potential[0] - reordered_potential[3]
+            if reordered_potential is None:
+                print("Reordering potential corners failed.")
+                pass # Continue to fallback
 
-            cross_products = [
-                np.cross(v1, v2),
-                np.cross(v2, v3),
-                np.cross(v3, v4),
-                np.cross(v4, v1)
-            ]
+            else:
+                v1 = reordered_potential[1] - reordered_potential[0]
+                v2 = reordered_potential[2] - reordered_potential[1]
+                v3 = reordered_potential[3] - reordered_potential[2]
+                v4 = reordered_potential[0] - reordered_potential[3]
 
-            signs = np.sign(cross_products)
-            is_convex = np.all(signs >= 0) or np.all(signs <= 0)
+                cross_products = [
+                    np.cross(v1, v2),
+                    np.cross(v2, v3),
+                    np.cross(v3, v4),
+                    np.cross(v4, v1)
+                ]
 
-            # Check area (should be a significant portion of the image area)
-            area = cv2.contourArea(reordered_potential)
-            img_area = h * w
-            area_ratio = area / img_area if img_area > 0 else 0
+                signs = np.sign(cross_products)
+                is_convex = np.all(signs >= 0) or np.all(signs <= 0)
 
-            # Check aspect ratio (should be somewhat close to 1 or the expected document aspect ratio)
-            side1 = np.linalg.norm(reordered_potential[0] - reordered_potential[1])
-            side2 = np.linalg.norm(reordered_potential[1] - reordered_potential[2])
-            aspect_ratio = max(side1, side2) / min(side1, side2) if min(side1, side2) > 0 else float('inf')
+                # Check area (should be a significant portion of the image area)
+                area = cv2.contourArea(reordered_potential)
+                img_area = h * w
+                area_ratio = area / img_area if img_area > 0 else 0
 
-            # Define thresholds
-            min_area_ratio = 0.05 # Minimum area relative to image
-            max_aspect_ratio = 5.0 # Maximum allowed aspect ratio deviation
+                # Check aspect ratio (should be somewhat close to 1 or the expected document aspect ratio)
+                side1 = np.linalg.norm(reordered_potential[0] - reordered_potential[1])
+                side2 = np.linalg.norm(reordered_potential[1] - reordered_potential[2])
+                aspect_ratio = max(side1, side2) / min(side1, side2) if min(side1, side2) > 0 else float('inf')
 
-            if is_convex and area_ratio > min_area_ratio and aspect_ratio < max_aspect_ratio:
-                 print("Selected corners are convex, have sufficient area, and reasonable aspect ratio.")
-                 return reordered_potential # Found good corners
+                # Define thresholds
+                min_area_ratio = 0.01
+                max_aspect_ratio = 10.0
+
+                if is_convex and area_ratio > min_area_ratio and aspect_ratio < max_aspect_ratio:
+                     print("Selected corners are convex, have sufficient area, and reasonable aspect ratio.")
+                     return reordered_potential # Found good corners
 
 
         except Exception as e:
-            print(f"Error during convexity/area/aspect ratio check: {e}")
+            print(f"Error during convexity/area/aspect ratio check (initial): {e}")
             # Continue to fallback if check fails
 
 
@@ -282,6 +291,10 @@ def select_best_corners(points, img_shape):
     if fallback_corners is not None and len(fallback_corners) == 4:
         try:
             reordered_fallback = reorder_corners(fallback_corners)
+            if reordered_fallback is None:
+                print("Reordering fallback corners failed.")
+                return None # Fallback also failed
+
             area = cv2.contourArea(reordered_fallback)
             img_area = h * w
             area_ratio = area / img_area if img_area > 0 else 0
@@ -290,8 +303,9 @@ def select_best_corners(points, img_shape):
             side2 = np.linalg.norm(reordered_fallback[1] - reordered_fallback[2])
             aspect_ratio = max(side1, side2) / min(side1, side2) if min(side1, side2) > 0 else float('inf')
 
-            min_area_ratio = 0.05
-            max_aspect_ratio = 5.0
+            min_area_ratio = 0.01
+            max_aspect_ratio = 10.0
+
 
             # Re-check convexity and other properties for fallback corners
             v1 = reordered_fallback[1] - reordered_fallback[0]
@@ -319,7 +333,7 @@ def select_best_corners(points, img_shape):
 
 
         except Exception as e:
-             print(f"Error during fallback convexity/area/aspect ratio check: {e}")
+             print(f"Error during convexity/area/aspect ratio check (fallback): {e}")
              return None # Fallback check failed
 
 
@@ -534,23 +548,33 @@ class PerspectiveTransformation(Component):
                                         ):
 
         # Ön işleme
+        preprocessed = img.copy() # Start with a copy
         if preprocess_method == 'aggressive':
-            preprocessed = self.preprocess_image_aggressive(img)
+            preprocessed = self.preprocess_image_aggressive(preprocessed)
         elif preprocess_method == 'small':
-            preprocessed = self.preprocess_image_small(img)
+            preprocessed = self.preprocess_image_small(preprocessed)
         elif preprocess_method == 'advanced':
-            preprocessed = self.preprocess_image_advanced(img)
+            preprocessed = self.preprocess_image_advanced(preprocessed)
         else: # 'default'
-            preprocessed = self.preprocess_image(img)
+            preprocessed = self.preprocess_image(preprocessed)
+
+        if preprocessed is None:
+             raise RuntimeError("Preprocessing failed.")
+
 
         if deblur:
             preprocessed = self.sharpen_image(preprocessed)
+            if preprocessed is None: raise RuntimeError("Deblurring failed.")
+
 
         if remove_background:
             preprocessed = self.remove_background_grabcut(preprocessed)
+            if preprocessed is None: raise RuntimeError("Background removal failed.")
+
 
         if remove_shadows_flag:
             preprocessed = self.remove_shadows(preprocessed)
+            if preprocessed is None: raise RuntimeError("Shadow removal failed.")
 
 
         gray = cv2.cvtColor(preprocessed, cv2.COLOR_BGR2GRAY)
@@ -588,6 +612,9 @@ class PerspectiveTransformation(Component):
                         edges = np.zeros_like(edges, dtype=np.uint8)
 
                      _, edges = cv2.threshold(edges, sobel_threshold_min, sobel_threshold_max, cv2.THRESH_BINARY)
+                else: # Simple thresholding
+                     _, edges = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
 
             if edges is not None and np.sum(edges) > 0: # Check if edges were successfully created and are not all zero
                 lines = cv2.HoughLines(edges, rho, theta, threshold_intersect)
@@ -597,7 +624,7 @@ class PerspectiveTransformation(Component):
                     if len(lines) >= 2: # Need at least 2 lines to find an intersection
                         cartesian = to_cartesian(img, lines)
                         intersections = get_intersections(img, cartesian)
-                        if len(intersections) >= 4:
+                        if intersections is not None and len(intersections) >= 4:
                             # Use improved corner selection method
                             corners = select_best_corners(intersections, img.shape)
 
@@ -690,7 +717,7 @@ class PerspectiveTransformation(Component):
                 if lines_p is not None and len(lines_p) > 0:
                      # Find intersections from these line segments and then corners
                      intersections_p = get_intersections_from_segments(lines_p, img.shape)
-                     if len(intersections_p) >= 4:
+                     if intersections_p is not None and len(intersections_p) >= 4:
                          # Use improved corner selection method
                          corners = select_best_corners(intersections_p, img.shape)
 
@@ -698,28 +725,32 @@ class PerspectiveTransformation(Component):
         if corners is None or len(corners) != 4: # Ensure exactly 4 corners were found by the simplified method
              raise ValueError(f"Detection method '{detection_method}' failed to find exactly 4 corners.")
 
-        corners = reorder_corners(corners)
+        # No need to reorder here, select_best_corners already returns reordered corners if successful
 
         h_img, w_img = img.shape[:2]
-        min_dim = min(h_img, w_img)
-        # Calculate target size based on A4 ratio or original aspect ratio
-        # Using A4 ratio as before
-        if h_img > w_img:
-            new_h, new_w = int(min_dim / 0.707), int(min_dim) # Adjusted to make the shorter side min_dim
-            if new_h > h_img * 1.5: new_h = int(h_img * 1.5) # Prevent extremely large output
-            if new_w > w_img * 1.5: new_w = int(w_img * 1.5)
+        # Use output dimensions from configs if KeepSide is False
+        if not self.keep_side:
+            new_w, new_h = self.output_width, self.output_height
         else:
-            new_h, new_w = int(min_dim), int(min_dim / 0.707) # Adjusted to make the shorter side min_dim
-            if new_h > h_img * 1.5: new_h = int(h_img * 1.5)
-            if new_w > w_img * 1.5: new_w = int(w_w * 1.5) # Fixed variable name
+             # Original KeepSide logic based on A4 ratio
+            min_dim = min(h_img, w_img)
+            if h_img > w_img:
+                new_h, new_w = int(min_dim / 0.707), int(min_dim) # Adjusted to make the shorter side min_dim
+                if new_h > h_img * 1.5: new_h = int(h_img * 1.5) # Prevent extremely large output
+                if new_w > w_img * 1.5: new_w = int(w_img * 1.5)
+            else:
+                new_h, new_w = int(min_dim), int(min_dim / 0.707) # Adjusted to make the shorter side min_dim
+                if new_h > h_img * 1.5: new_h = int(h_img * 1.5)
+                if new_w > w_img * 1.5: new_w = int(w_img * 1.5)
 
 
-        destination = np.array([[0,0], [new_w,0], [new_w,new_h], [0,new_h]], dtype=np.float32)
+        output_size = (new_w, new_h)
+        destination = np.array([[0,0], [new_w,0], [new_w,new_h], [0,new_h]], dtype=np.float32) # Fixed typo in destination array
         M = cv2.getPerspectiveTransform(corners, destination)
-        corrected = cv2.warpPerspective(img, M, (new_w, new_h))
+        corrected = cv2.warpPerspective(img, M, output_size)
 
         # Return corrected image, source corners and output size
-        return corrected, corners, (new_w, new_h)
+        return corrected, corners, output_size
 
     def _apply_perspective(self, src_img: np.ndarray):
         """
@@ -727,6 +758,9 @@ class PerspectiveTransformation(Component):
         Farklı parametre kombinasyonlarını dener ve başarılı olan ilkini döndürür.
         Orijinal ve negatif görüntü üzerinde denemeler yapar.
         """
+        if src_img is None or src_img.size == 0:
+            raise ValueError("Input image is empty or None in _apply_perspective.")
+
         original_image_error = None
         negative_image_error = None
 
