@@ -4,7 +4,7 @@ from itertools import combinations
 import cv2
 import numpy as np
 
-
+# Sistem yolunu güncelleyin
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../../../"))
 
 from sdks.novavision.src.media.image import Image
@@ -13,27 +13,20 @@ from sdks.novavision.src.helper.executor import Executor
 from components.PerspectiveTransformation.src.models.PackageModel import PackageModel
 from components.PerspectiveTransformation.src.utils.response import build_response
 
-
-
+# Yardımcı fonksiyonlar (sınıfın dışında kalacak)
 def order_points(pts):
     # Noktaları numpy dizisine çevir
     pts = np.array(pts)
-
-    # Noktaların toplamına göre sol üst ve sağ altı bul
     s = pts.sum(axis=1)
     rect = np.zeros((4, 2), dtype="float32")
     rect[0] = pts[np.argmin(s)]  # Sol üst
     rect[2] = pts[np.argmax(s)]  # Sağ alt
-
-    # Farklarına göre sağ üst ve sol altı bul
     diff = np.diff(pts, axis=1)
     rect[1] = pts[np.argmin(diff)]  # Sağ üst
     rect[3] = pts[np.argmax(diff)]  # Sol alt
-
     return rect
 
 def get_intersections(img, lines):
-
     height, width = img.shape[:2]
     intersections = []
     for i, line1 in enumerate(lines):
@@ -51,18 +44,15 @@ def get_intersections(img, lines):
                 intersections.append([int(px), int(py)])
     return np.array(intersections, dtype=np.float32)
 
-
 def reorder_corners(corners):
     """Köşeleri: [üst sol, üst sağ, alt sağ, alt sol] olarak sırala"""
     new_corners = np.zeros((4, 2), dtype=np.float32)
     s = corners.sum(axis=1)
     diff = np.diff(corners, axis=1)
-
     new_corners[0] = corners[np.argmin(s)]      # üst sol
     new_corners[2] = corners[np.argmax(s)]      # alt sağ
     new_corners[1] = corners[np.argmin(diff)]   # üst sağ
     new_corners[3] = corners[np.argmax(diff)]   # alt sol
-
     return new_corners
 
 def filter_perpendicular(lines, margin=np.pi/18):
@@ -114,31 +104,23 @@ def to_cartesian(img, lines):
     return cartesian
 
 def approximate_4_corners(points):
-
     if len(points) <= 4:
         return points.astype(np.float32)
-
     center = np.mean(points, axis=0)
     distances = np.linalg.norm(points - center, axis=1)
     idxs = np.argsort(distances)[-4:]
     return points[idxs].astype(np.float32)
 
 def find_document_contours(img_gray, area_threshold_ratio=0.05):
-
     contours, _ = cv2.findContours(img_gray, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-
     contours = sorted(contours, key=cv2.contourArea, reverse=True)
-
     document_contours = []
     img_area = img_gray.shape[0] * img_gray.shape[1]
-
     for cnt in contours:
         peri = cv2.arcLength(cnt, True)
         approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
-
         if len(approx) == 4 and cv2.contourArea(cnt) > img_area * area_threshold_ratio:
             document_contours.append(approx)
-
     return document_contours
 
 def get_corners_from_contours(contours):
@@ -175,19 +157,16 @@ def get_intersections_from_segments(segments, img_shape, img=None):
     intersections = []
     extended_lines = []
     for x1, y1, x2, y2 in segments:
-
         if x2 - x1 == 0: # Vertical line
             extended_lines.append((x1, 0, x1, height))
         elif y2 - y1 == 0: # Horizontal line
             extended_lines.append((0, y1, width, y1))
         else:
-            # Calculate slope and y-intercept
             m = (y2 - y1) / (x2 - x1)
             b = y1 - m * x1
-            # Points at image boundaries
             y_at_x0 = int(b)
             y_at_xw = int(m * width + b)
-            x_at_y0 = int(-b / m) if m != 0 else -1 # Avoid division by zero
+            x_at_y0 = int(-b / m) if m != 0 else -1
             x_at_yh = int((height - b) / m) if m != 0 else -1
 
             points_on_boundary = []
@@ -196,32 +175,24 @@ def get_intersections_from_segments(segments, img_shape, img=None):
             if 0 <= x_at_y0 <= width and m != 0: points_on_boundary.append((x_at_y0, 0))
             if 0 <= x_at_yh <= width and m != 0: points_on_boundary.append((x_at_yh, height))
 
-            # Add the two most distinct points on the boundary as extended line
             if len(points_on_boundary) >= 2:
                  p1, p2 = points_on_boundary[0], points_on_boundary[-1]
                  extended_lines.append((p1[0], p1[1], p2[0], p2[1]))
-            elif len(points_on_boundary) == 1: # Handle case where only one point is on boundary
-                 # Extend from the closest segment endpoint to the boundary point
+            elif len(points_on_boundary) == 1:
                  if np.linalg.norm(np.array([x1, y1]) - np.array(points_on_boundary[0])) < np.linalg.norm(np.array([x2, y2]) - np.array(points_on_boundary[0])):
                      extended_lines.append((x1, y1, points_on_boundary[0][0], points_on_boundary[0][1]))
                  else:
                      extended_lines.append((x2, y2, points_on_boundary[0][0], points_on_boundary[0][1]))
-            # If less than 2 points on boundary, try extending segment endpoints
             elif len(points_on_boundary) < 2 and len(segments) > 1:
-                # Simple extension based on segment direction
                 dx = x2 - x1
                 dy = y2 - y1
-                # Extend from endpoints
                 p1_ext = (int(x1 - dx * max(width, height)), int(y1 - dy * max(width, height)))
                 p2_ext = (int(x2 + dx * max(width, height)), int(y2 + dy * max(width, height)))
                 extended_lines.append((p1_ext[0], p1_ext[1], p2_ext[0], p2_ext[1]))
 
-
     if extended_lines:
          intersections = get_intersections(img, extended_lines)
-
     return intersections
-
 
 class PerspectiveTransformation(Component):
     def __init__(self, request, bootstrap):
@@ -230,8 +201,7 @@ class PerspectiveTransformation(Component):
 
         # self.request.data'nın bir sözlük olduğundan emin olun ve PackageModel'i güvenle başlatın
         if not isinstance(self.request.data, dict):
-            print(
-                f"UYARI: self.request.data bir sözlük değil, tipi: {type(self.request.data)}. Boş bir sözlük kullanılıyor.")
+            print(f"UYARI: self.request.data bir sözlük değil, tipi: {type(self.request.data)}. Boş bir sözlük kullanılıyor.")
             model_data = {}
         else:
             model_data = self.request.data
@@ -239,12 +209,10 @@ class PerspectiveTransformation(Component):
         try:
             self.request.model = PackageModel(**model_data)
         except TypeError as e:
-            # PackageModel'in beklediği argümanlar eksik veya yanlış olabilir
             print(f"HATA: PackageModel başlatılırken TypeError oluştu: {e}")
             print(f"self.request.data içeriği: {model_data}")
             raise RuntimeError("PackageModel başlatılamadı, lütfen request.data'yı kontrol edin.") from e
         except Exception as e:
-            # Diğer olası hataları yakala
             print(f"HATA: PackageModel başlatılırken beklenmeyen bir hata oluştu: {e}")
             print(f"self.request.data içeriği: {model_data}")
             raise RuntimeError("PackageModel başlatılamadı.") from e
@@ -261,6 +229,11 @@ class PerspectiveTransformation(Component):
             print(f"HATA: 'inputImage' parametresi alınırken beklenmeyen bir hata oluştu: {e}")
             raise RuntimeError("'inputImage' parametresi alınamadı.") from e
 
+        # PackageModel'den keep_side ve warp_image_flag değerlerini alın
+        # Eğer PackageModel'de bu özellikler yoksa varsayılan değerler atayın
+        self.keep_side = getattr(self.request.model, 'keep_side', 'auto') # Varsayılan değer 'auto'
+        self.warp_image_flag = getattr(self.request.model, 'warp_image', True) # Varsayılan değer True
+
     @staticmethod
     def bootstrap(config: dict) -> dict:
         return {}
@@ -276,8 +249,7 @@ class PerspectiveTransformation(Component):
             img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
         return img
 
-
-    def preprocess_image(img):
+    def preprocess_image(self, img): # self parametresi eklendi
         """Orta seviye CLAHE ile kontrast artırma (normal)"""
         clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
@@ -292,7 +264,7 @@ class PerspectiveTransformation(Component):
         img = cv2.cvtColor(lab_clahe, cv2.COLOR_LAB2BGR)
         return img
 
-    def preprocess_image_aggressive(img):
+    def preprocess_image_aggressive(self, img): # self parametresi eklendi
         """Agresif CLAHE, histogram eşitleme ile güçlü kontrast artırma"""
         clahe = cv2.createCLAHE(clipLimit=5.0, tileGridSize=(16,16))
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
@@ -310,7 +282,7 @@ class PerspectiveTransformation(Component):
         img_eq = cv2.cvtColor(gray_eq, cv2.COLOR_GRAY2BGR)
         return img_eq
 
-    def preprocess_image_small(img):
+    def preprocess_image_small(self, img): # self parametresi eklendi
         """Küçük resimler için daha hafif CLAHE ve keskinleştirme"""
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(4,4))
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
@@ -327,7 +299,7 @@ class PerspectiveTransformation(Component):
         img_sharp = cv2.filter2D(img_clahe, -1, kernel)
         return img_sharp
 
-    def preprocess_image_advanced(img):
+    def preprocess_image_advanced(self, img): # self parametresi eklendi
         """Daha gelişmiş ön işleme: CLAHE + Median Blur + Unsharp Mask"""
         clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(10,10))
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
@@ -335,18 +307,12 @@ class PerspectiveTransformation(Component):
         v = clahe.apply(v)
         hsv_clahe = cv2.merge([h, s, v])
         img_clahe = cv2.cvtColor(hsv_clahe, cv2.COLOR_HSV2BGR)
-
-        # Median Blur ile gürültü azaltma
         img_blurred = cv2.medianBlur(img_clahe, 5)
-
-        # Unsharp Masking ile keskinleştirme
         gaussian = cv2.GaussianBlur(img_blurred, (9, 9), 0)
         unsharp_mask = cv2.addWeighted(img_blurred, 1.5, gaussian, -0.5, 0)
-
         return unsharp_mask
 
-
-    def sharpen_image(img):
+    def sharpen_image(self, img): # self parametresi eklendi
         """Bulanıklık için keskinleştirme filtresi"""
         kernel = np.array([[0, -1, 0],
                            [-1, 5, -1],
@@ -354,46 +320,37 @@ class PerspectiveTransformation(Component):
         sharp = cv2.filter2D(img, -1, kernel)
         return sharp
 
-    def remove_background_grabcut(img):
+    def remove_background_grabcut(self, img): # self parametresi eklendi
         """GrabCut ile arka planı kaldırma (başlangıç maskesi gerekebilir)"""
         mask = np.zeros(img.shape[:2], np.uint8)
         bgdModel = np.zeros((1, 65), np.float64)
         fgdModel = np.zeros((1, 65), np.float64)
-        # Dikdörtgen alanı (document'ı içeren) manuel olarak belirtmek gerekebilir
-        # Şimdilik tüm görüntüyü foreground olarak işaretliyoruz, bu her zaman iyi sonuç vermeyebilir
         rect = (1, 1, img.shape[1]-1, img.shape[0]-1)
         cv2.grabCut(img, mask, rect, bgdModel, fgdModel, 5, cv2.GC_INIT_WITH_RECT)
         mask2 = np.where((mask == 2) | (mask == 0), 0, 1).astype('uint8')
         img = img * mask2[:, :, np.newaxis]
         return img
 
-    def remove_shadows(img):
+    def remove_shadows(self, img): # self parametresi eklendi
         """Gölge kaldırma (basit)"""
-        # Convert to grayscale
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-        # Apply adaptive thresholding to get a rough mask of highlights
         dilated_img = cv2.dilate(gray, np.ones((7,7), np.uint8))
         bg_img = cv2.medianBlur(dilated_img, 21)
         diff_img = 255 - cv2.absdiff(gray, bg_img)
         norm_img = cv2.normalize(diff_img, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8UC1)
-        # Simple thresholding or Otsu's thresholding can be added here for a binary mask
-
-        # Convert back to BGR to apply the mask
         result = cv2.cvtColor(norm_img, cv2.COLOR_GRAY2BGR)
         return result
 
-
-    def correct_perspective_enhanced(self,img,
-                                      preprocess_method='default', # 'default', 'aggressive', 'small', 'advanced'
+    def correct_perspective_enhanced(self, img,
+                                      preprocess_method='default',
                                       deblur=False,
-                                      remove_background=False, # GrabCut
+                                      remove_background=False,
                                       remove_shadows_flag=False,
                                       use_adaptive_thresholding=False,
                                       adaptive_block_size=11,
                                       adaptive_c_value=2,
-                                      edge_detector='canny', # 'canny', 'sobel'
-                                      blur_method='median', # 'median', 'bilateral'
+                                      edge_detector='canny',
+                                      blur_method='median',
                                       median_blur_size=51,
                                       canny_threshold_max=140,
                                       canny_threshold_min=30,
@@ -401,22 +358,21 @@ class PerspectiveTransformation(Component):
                                       sobel_threshold_max=255,
                                       rho=1,
                                       theta=np.pi/180,
-                                      threshold_intersect=250, # For HoughLines
+                                      threshold_intersect=250,
                                       threshold_distance=0.15,
                                       perpendicular_margin=np.pi/18,
-                                      detection_method='hough', # 'hough', 'contour', 'shi_tomasi', 'harris', 'hough_lines_p'
-                                      contour_area_threshold_ratio=0.05, # For contour detection
-                                      shi_tomasi_maxCorners=100, # For Shi-Tomasi
+                                      detection_method='hough',
+                                      contour_area_threshold_ratio=0.05,
+                                      shi_tomasi_maxCorners=100,
                                       shi_tomasi_qualityLevel=0.01,
                                       shi_tomasi_minDistance=10,
-                                      harris_blockSize=2, # For Harris
+                                      harris_blockSize=2,
                                       harris_ksize=3,
                                       harris_k=0.04,
                                       harris_threshold=0.01,
-                                      hough_p_threshold=50, # For Probabilistic Hough
+                                      hough_p_threshold=50,
                                       hough_p_minLineLength=50,
-                                      hough_p_maxLineGap=10,
-                                      intermediate=True):
+                                      hough_p_maxLineGap=10): # intermediate parametresi kaldırıldı, her zaman nihai çıktıyı döndürecek
 
         if preprocess_method == 'aggressive':
             preprocessed = self.preprocess_image_aggressive(img)
@@ -436,7 +392,6 @@ class PerspectiveTransformation(Component):
         if remove_shadows_flag:
             preprocessed = self.remove_shadows(preprocessed)
 
-
         gray = cv2.cvtColor(preprocessed, cv2.COLOR_BGR2GRAY)
 
         if blur_method == 'median':
@@ -446,13 +401,9 @@ class PerspectiveTransformation(Component):
         else:
              blurred = gray
 
-
-        # Perform detection based on the selected method
         corners = None
-        edges = None # Initialize edges to None for Hough methods
-        thresh = None # Initialize thresh for contour method
-        detection_output_img = img.copy() # Image to display for intermediate step, initialized with original image
-
+        edges = None
+        thresh = None
 
         if detection_method == 'hough':
             if use_adaptive_thresholding:
@@ -467,7 +418,7 @@ class PerspectiveTransformation(Component):
                      edges = np.uint8(edges * 255 / edges.max())
                      _, edges = cv2.threshold(edges, sobel_threshold_min, sobel_threshold_max, cv2.THRESH_BINARY)
 
-            if edges is not None: # Check if edges were successfully created
+            if edges is not None:
                 lines = cv2.HoughLines(edges, rho, theta, threshold_intersect)
                 if lines is not None:
                     lines = filter_perpendicular(lines[:,0], perpendicular_margin)
@@ -475,35 +426,26 @@ class PerspectiveTransformation(Component):
                     if len(lines) >= 4:
                         cartesian = to_cartesian(img, lines)
                         intersections = get_intersections(img, cartesian)
-                        if corners is not None and len(corners) > 4:
-                            corners = approximate_4_corners(corners)
-
-                detection_output_img = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR) # Convert edges to color for display
-
+                        if intersections is not None and len(intersections) > 4: # Kesişim noktaları bulunduysa
+                            corners = approximate_4_corners(intersections) # Kesişim noktalarından 4 köşe seç
+                        elif intersections is not None and len(intersections) == 4:
+                            corners = intersections
+                        else:
+                            corners = None # Yeterli kesişim noktası bulunamadı
 
         elif detection_method == 'contour':
-            # Contour detection often works better on thresholded images
             if use_adaptive_thresholding:
                  thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, adaptive_block_size, adaptive_c_value)
             else:
-                 _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU) # Use Otsu's thresholding
+                 _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
             document_contours = find_document_contours(thresh, area_threshold_ratio=contour_area_threshold_ratio)
             if document_contours:
-                # Assuming the largest contour is the document
                 corners = get_corners_from_contours([document_contours[0]])
-                # Ensure we have exactly 4 corners, if not, this attempt fails
                 if corners is not None and len(corners) != 4:
                     corners = None
 
-            detection_output_img = cv2.cvtColor(thresh, cv2.COLOR_GRAY2BGR) # Convert thresholded to color for display
-            if document_contours: # Draw the detected contour on the output image
-                cv2.drawContours(detection_output_img, document_contours, -1, (0, 255, 0), 3)
-
-
         elif detection_method == 'shi_tomasi':
-            # Apply preprocessing suitable for corner detection before Shi-Tomasi
-            # Using blurred image as input for corner detectors often works well
             corners = detect_corners_shi_tomasi(
                 blurred,
                 maxCorners=shi_tomasi_maxCorners,
@@ -512,20 +454,10 @@ class PerspectiveTransformation(Component):
             )
             if corners is not None and len(corners) > 4:
                 corners = approximate_4_corners(corners)
-
             elif corners is not None and len(corners) != 4:
-                 corners = None # Ensure exactly 4 corners are found or set to None
-
-            # Visualize corners on the original image for intermediate display
-            if corners is not None:
-                 for corner in corners:
-                     x, y = corner.ravel()
-                     cv2.circle(detection_output_img, (int(x), int(y)), 5, (0, 255, 0), -1)
-
+                 corners = None
 
         elif detection_method == 'harris':
-             # Apply preprocessing suitable for corner detection before Harris
-             # Using blurred image as input for corner detectors often works well
              corners = detect_corners_harris(
                  blurred,
                  blockSize=harris_blockSize,
@@ -535,20 +467,10 @@ class PerspectiveTransformation(Component):
              )
              if corners is not None and len(corners) > 4:
                  corners = approximate_4_corners(corners)
-
              elif corners is not None and len(corners) != 4:
-                  corners = None # Ensure exactly 4 corners are found or set to None
-
-             # Visualize corners on the original image for intermediate display
-             if corners is not None:
-                 for corner in corners:
-                     x, y = corner.ravel()
-                     cv2.circle(detection_output_img, (int(x), int(y)), 5, (0, 255, 0), -1)
-
+                  corners = None
 
         elif detection_method == 'hough_lines_p':
-            # Apply preprocessing suitable for probabilistic Hough
-            # Using edges or thresholded image as input often works well
             if use_adaptive_thresholding:
                  edges_for_hough_p = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, adaptive_block_size, adaptive_c_value)
             else:
@@ -560,37 +482,30 @@ class PerspectiveTransformation(Component):
                      edges_for_hough_p = cv2.magnitude(sobelx, sobely)
                      edges_for_hough_p = np.uint8(edges_for_hough_p * 255 / edges_for_hough_p.max())
                      _, edges_for_hough_p = cv2.threshold(edges_for_hough_p, sobel_threshold_min, sobel_threshold_max, cv2.THRESH_BINARY)
-                else: # Fallback if no edge detector is specified but use_adaptive_thresholding is False
-                     _, edges_for_hough_p = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU) # Use Otsu's on blurred
-
+                else:
+                     _, edges_for_hough_p = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
             lines_p = None
             if edges_for_hough_p is not None:
                 lines_p = find_lines_probabilistic_hough(
                     edges_for_hough_p,
-                    rho=rho, # Using general rho/theta for simplicity, can add specific ones if needed
+                    rho=rho,
                     theta=theta,
                     threshold=hough_p_threshold,
                     minLineLength=hough_p_minLineLength,
                     maxLineGap=hough_p_maxLineGap
                 )
                 if lines_p is not None and len(lines_p) > 0:
-                     # Find intersections from these line segments and then corners
                      intersections_p = get_intersections_from_segments(lines_p, img.shape)
                      if len(intersections_p) >= 4:
-                         ordered = order_points(np.array(intersections_p[:4]))
-                         center = np.mean(ordered, axis=0)
-
-            # Visualize detected lines on the original image for intermediate display
-            if lines_p is not None:
-                for x1, y1, x2, y2 in lines_p:
-                    cv2.line(detection_output_img, (x1, y1), (x2, y2), (0, 0, 255), 2)
-
+                         corners = approximate_4_corners(intersections_p)
+                     else:
+                         corners = None # Yeterli kesişim noktası bulunamadı
 
         if corners is None or len(corners) < 4:
              raise ValueError(f"Detection method '{detection_method}' failed to find 4 corners.")
 
-        corners = reorder_corners(corners)
+        src_quad = reorder_corners(corners) # Bu, kaynak köşeleriniz (src_quad)
 
         h_img, w_img = img.shape[:2]
         min_dim = min(h_img, w_img)
@@ -599,293 +514,104 @@ class PerspectiveTransformation(Component):
         else:
             new_h, new_w = int(min_dim * 0.707), int(min_dim)
 
+        output_size = (new_w, new_h) # Bu, çıktı boyutunuz (out_w, out_h)
         destination = np.array([[0,0], [new_w,0], [new_w,new_h], [0,new_h]], dtype=np.float32)
-        M = cv2.getPerspectiveTransform(corners, destination)
-        corrected = cv2.warpPerspective(img, M, (new_w, new_h))
+        M = cv2.getPerspectiveTransform(src_quad, destination)
+        corrected = cv2.warpPerspective(img, M, output_size)
 
-        if intermediate:
-            # Return the relevant intermediate image based on the detection method
-            return gray, blurred, detection_output_img, corrected
-        else:
-            return corrected
+        # Düzeltilmiş görüntüyü, kaynak köşeleri ve çıktı boyutunu döndürün
+        return corrected, src_quad, output_size
 
+    def _apply_perspective(self, src_img: np.ndarray):
+        """
+        Görüntüye gelişmiş perspektif düzeltme uygular.
+        Farklı parametre kombinasyonlarını dener ve başarılı olan ilkini döndürür.
+        """
+        h, w = src_img.shape[:2]
+        max_dim = max(h, w)
 
-    def correct_perspective_auto_advanced_detection(img, intermediate=True):
-        def try_all_tries(image):
-            h, w = image.shape[:2]
-            max_dim = max(h, w)
+        # Denenecek parametre kombinasyonları (orijinal dosyanızdaki geniş listeyi buraya kopyalayabilirsiniz)
+        tries = [
+            {"preprocess_method": 'default', "deblur": False, "remove_background": False, "remove_shadows_flag": False, "use_adaptive_thresholding": False, "edge_detector": 'canny', "blur_method": 'median', "median_blur_size": 51, "canny_threshold_max": 150, "canny_threshold_min": 50, "rho": 1, "theta": np.pi/180, "threshold_intersect": 150, "detection_method": 'hough'},
+            {"preprocess_method": 'aggressive', "deblur": False, "remove_background": False, "remove_shadows_flag": False, "use_adaptive_thresholding": False, "edge_detector": 'canny', "blur_method": 'median', "median_blur_size": 31, "canny_threshold_max": 100, "canny_threshold_min": 30, "rho": 1, "theta": np.pi/180, "threshold_intersect": 100, "detection_method": 'hough'},
+            {"preprocess_method": 'advanced', "deblur": True, "remove_background": False, "remove_shadows_flag": False, "use_adaptive_thresholding": False, "edge_detector": 'canny', "blur_method": 'median', "median_blur_size": 61, "canny_threshold_max": 200, "canny_threshold_min": 80, "rho": 1, "theta": np.pi/180, "threshold_intersect": 200, "detection_method": 'hough'},
+            {"preprocess_method": 'default', "deblur": False, "remove_background": False, "remove_shadows_flag": True, "use_adaptive_thresholding": False, "edge_detector": 'canny', "blur_method": 'median', "median_blur_size": 51, "canny_threshold_max": 150, "canny_threshold_min": 50, "rho": 1, "theta": np.pi/180, "threshold_intersect": 150, "detection_method": 'hough'},
+            {"preprocess_method": 'default', "remove_shadows_flag": False, "use_adaptive_thresholding": False, "blur_method": 'median', "median_blur_size": 51, "detection_method": 'contour', "contour_area_threshold_ratio": 0.05},
+            {"preprocess_method": 'aggressive', "remove_shadows_flag": False, "use_adaptive_thresholding": False, "blur_method": 'median', "median_blur_size": 31, "detection_method": 'contour', "contour_area_threshold_ratio": 0.03},
+            {"preprocess_method": 'default', "deblur": False, "remove_background": False, "remove_shadows_flag": False, "blur_method": 'median', "median_blur_size": 5, "detection_method": 'shi_tomasi', "shi_tomasi_maxCorners": 100, "shi_tomasi_qualityLevel": 0.01, "shi_tomasi_minDistance": 10},
+            {"preprocess_method": 'advanced', "deblur": True, "remove_background": False, "remove_shadows_flag": False, "blur_method": 'median', "median_blur_size": 3, "detection_method": 'shi_tomasi', "shi_tomasi_maxCorners": 50, "shi_tomasi_qualityLevel": 0.05, "shi_tomasi_minDistance": 20},
+            {"preprocess_method": 'default', "deblur": False, "remove_background": False, "remove_shadows_flag": False, "blur_method": 'median', "median_blur_size": 5, "detection_method": 'harris', "harris_blockSize": 2, "harris_ksize": 3, "harris_k": 0.04, "harris_threshold": 0.01},
+            {"preprocess_method": 'advanced', "deblur": True, "remove_background": False, "remove_shadows_flag": False, "blur_method": 'median', "median_blur_size": 3, "detection_method": 'harris', "harris_blockSize": 3, "harris_ksize": 5, "harris_k": 0.05, "harris_threshold": 0.005},
+            {"preprocess_method": 'default', "deblur": False, "remove_background": False, "remove_shadows_flag": False, "use_adaptive_thresholding": False, "edge_detector": 'canny', "blur_method": 'median', "median_blur_size": 51, "canny_threshold_max": 150, "canny_threshold_min": 50, "rho": 1, "theta": np.pi/180, "hough_p_threshold": 50, "hough_p_minLineLength": 50, "hough_p_maxLineGap": 10, "detection_method": 'hough_lines_p'},
+            {"preprocess_method": 'aggressive', "deblur": False, "remove_background": False, "remove_shadows_flag": False, "use_adaptive_thresholding": False, "edge_detector": 'canny', "blur_method": 'median', "median_blur_size": 31, "canny_threshold_max": 100, "canny_threshold_min": 30, "rho": 1, "theta": np.pi/180, "hough_p_threshold": 80, "hough_p_minLineLength": 80, "hough_p_maxLineGap": 20, "detection_method": 'hough_lines_p'},
+        ]
 
-            # Define a wider range of parameters and methods to try (Further Reduced for faster execution)
-            tries = []
+        print(f"Toplam {len(tries)} deneme yapılacak.")
 
-            # Add a baseline set of parameters that are generally effective
-            baseline_tries = [
-                {"preprocess_method": 'default', "deblur": False, "remove_background": False, "remove_shadows_flag": False, "use_adaptive_thresholding": False, "edge_detector": 'canny', "blur_method": 'median', "median_blur_size": 51, "canny_threshold_max": 150, "canny_threshold_min": 50, "rho": 1, "theta": np.pi/180, "threshold_intersect": 150, "detection_method": 'hough'},
-                {"preprocess_method": 'aggressive', "deblur": False, "remove_background": False, "remove_shadows_flag": False, "use_adaptive_thresholding": False, "edge_detector": 'canny', "blur_method": 'median', "median_blur_size": 31, "canny_threshold_max": 100, "canny_threshold_min": 30, "rho": 1, "theta": np.pi/180, "threshold_intersect": 100, "detection_method": 'hough'},
-                 {"preprocess_method": 'advanced', "deblur": True, "remove_background": False, "remove_shadows_flag": False, "use_adaptive_thresholding": False, "edge_detector": 'canny', "blur_method": 'median', "median_blur_size": 61, "canny_threshold_max": 200, "canny_threshold_min": 80, "rho": 1, "theta": np.pi/180, "threshold_intersect": 200, "detection_method": 'hough'},
-                {"preprocess_method": 'default', "deblur": False, "remove_background": False, "remove_shadows_flag": True, "use_adaptive_thresholding": False, "edge_detector": 'canny', "blur_method": 'median', "median_blur_size": 51, "canny_threshold_max": 150, "canny_threshold_min": 50, "rho": 1, "theta": np.pi/180, "threshold_intersect": 150, "detection_method": 'hough'},
-
-                 # Add baseline for contour detection
-                {"preprocess_method": 'default', "remove_shadows_flag": False, "use_adaptive_thresholding": False, "blur_method": 'median', "median_blur_size": 51, "detection_method": 'contour', "contour_area_threshold_ratio": 0.05},
-                 {"preprocess_method": 'aggressive', "remove_shadows_flag": False, "use_adaptive_thresholding": False, "blur_method": 'median', "median_blur_size": 31, "detection_method": 'contour', "contour_area_threshold_ratio": 0.03},
-
-                # Add baseline for Shi-Tomasi
-                {"preprocess_method": 'default', "deblur": False, "remove_background": False, "remove_shadows_flag": False, "blur_method": 'median', "median_blur_size": 5, "detection_method": 'shi_tomasi', "shi_tomasi_maxCorners": 100, "shi_tomasi_qualityLevel": 0.01, "shi_tomasi_minDistance": 10},
-                {"preprocess_method": 'advanced', "deblur": True, "remove_background": False, "remove_shadows_flag": False, "blur_method": 'median', "median_blur_size": 3, "detection_method": 'shi_tomasi', "shi_tomasi_maxCorners": 50, "shi_tomasi_qualityLevel": 0.05, "shi_tomasi_minDistance": 20},
-
-                # Add baseline for Harris
-                {"preprocess_method": 'default', "deblur": False, "remove_background": False, "remove_shadows_flag": False, "blur_method": 'median', "median_blur_size": 5, "detection_method": 'harris', "harris_blockSize": 2, "harris_ksize": 3, "harris_k": 0.04, "harris_threshold": 0.01},
-                 {"preprocess_method": 'advanced', "deblur": True, "remove_background": False, "remove_shadows_flag": False, "blur_method": 'median', "median_blur_size": 3, "detection_method": 'harris', "harris_blockSize": 3, "harris_ksize": 5, "harris_k": 0.05, "harris_threshold": 0.005},
-
-                 # Add baseline for Probabilistic Hough
-                {"preprocess_method": 'default', "deblur": False, "remove_background": False, "remove_shadows_flag": False, "use_adaptive_thresholding": False, "edge_detector": 'canny', "blur_method": 'median', "median_blur_size": 51, "canny_threshold_max": 150, "canny_threshold_min": 50, "rho": 1, "theta": np.pi/180, "hough_p_threshold": 50, "hough_p_minLineLength": 50, "hough_p_maxLineGap": 10, "detection_method": 'hough_lines_p'},
-                 {"preprocess_method": 'aggressive', "deblur": False, "remove_background": False, "remove_shadows_flag": False, "use_adaptive_thresholding": False, "edge_detector": 'canny', "blur_method": 'median', "median_blur_size": 31, "canny_threshold_max": 100, "canny_threshold_min": 30, "rho": 1, "theta": np.pi/180, "hough_p_threshold": 80, "hough_p_minLineLength": 80, "hough_p_maxLineGap": 20, "detection_method": 'hough_lines_p'},
-
-
-            ]
-            tries.extend(baseline_tries)
-
-            # Add variations for each parameter and detection method (Further Reduced for faster execution)
-            preprocess_methods = ['default', 'advanced'] # Further reduced preprocess methods
-            bool_options = [False, True]
-            edge_detectors = ['canny', 'sobel']
-            blur_methods = ['median', 'bilateral']
-            median_blur_sizes = [5, 51] # Further reduced blur sizes
-            canny_threshold_max_values = [100, 200] # Further reduced Canny thresholds
-            canny_threshold_min_values = [20, 40]
-            sobel_threshold_min_values = [10] # Further reduced Sobel thresholds
-            sobel_threshold_max_values = [150]
-            rho_values = [1]
-            theta_values = [np.pi/180]
-            threshold_intersect_values = [150] # Further reduced Hough intersect thresholds
-            detection_methods = ['hough', 'contour', 'shi_tomasi', 'harris', 'hough_lines_p']
-            contour_area_threshold_ratios = [0.05] # Further reduced contour area thresholds
-            shi_tomasi_maxCorners_values = [100] # Further reduced Shi-Tomasi parameters
-            shi_tomasi_qualityLevel_values = [0.01]
-            shi_tomasi_minDistance_values = [10]
-            harris_threshold_values = [0.01] # Further reduced Harris parameters
-            hough_p_threshold_values = [80] # Further reduced Probabilistic Hough parameters
-            hough_p_minLineLength_values = [50]
-            hough_p_maxLineGap_values = [10]
-
-
-            for preprocess_method in preprocess_methods:
-                for deblur in bool_options:
-                    for remove_background in bool_options:
-                        for remove_shadows_flag in bool_options:
-                            for use_adaptive_thresholding in bool_options:
-                                for blur_method in blur_methods:
-                                    for median_blur_size in median_blur_sizes:
-                                        for detection_method in detection_methods:
-                                            if detection_method == 'hough':
-                                                for edge_detector in edge_detectors:
-                                                    for rho in rho_values:
-                                                        for theta in theta_values:
-                                                            for threshold_intersect in threshold_intersect_values:
-                                                                if edge_detector == 'canny' and not use_adaptive_thresholding:
-                                                                    for canny_threshold_max in canny_threshold_max_values:
-                                                                        for canny_threshold_min in canny_threshold_min_values:
-                                                                            if canny_threshold_min < canny_threshold_max:
-                                                                                params = {
-                                                                                    "preprocess_method": preprocess_method,
-                                                                                    "deblur": deblur,
-                                                                                    "remove_background": remove_background,
-                                                                                    "remove_shadows_flag": remove_shadows_flag,
-                                                                                    "use_adaptive_thresholding": use_adaptive_thresholding,
-                                                                                    "edge_detector": edge_detector,
-                                                                                    "blur_method": blur_method,
-                                                                                    "median_blur_size": median_blur_size,
-                                                                                    "canny_threshold_max": canny_threshold_max,
-                                                                                    "canny_threshold_min": canny_threshold_min,
-                                                                                    "rho": rho,
-                                                                                    "theta": theta,
-                                                                                    "threshold_intersect": threshold_intersect,
-                                                                                    "detection_method": detection_method
-                                                                                }
-                                                                                if params not in tries:
-                                                                                    tries.append(params)
-                                                                elif edge_detector == 'sobel' and not use_adaptive_thresholding:
-                                                                    for sobel_threshold_min in sobel_threshold_min_values:
-                                                                        for sobel_threshold_max in sobel_threshold_max_values:
-                                                                            if sobel_threshold_min < sobel_threshold_max:
-                                                                                 params = {
-                                                                                    "preprocess_method": preprocess_method,
-                                                                                    "deblur": deblur,
-                                                                                    "remove_background": remove_background,
-                                                                                    "remove_shadows_flag": remove_shadows_flag,
-                                                                                    "use_adaptive_thresholding": use_adaptive_thresholding,
-                                                                                    "edge_detector": edge_detector,
-                                                                                    "blur_method": blur_method,
-                                                                                    "median_blur_size": median_blur_size,
-                                                                                    "sobel_threshold_min": sobel_threshold_min,
-                                                                                    "sobel_threshold_max": sobel_threshold_max,
-                                                                                    "rho": rho,
-                                                                                    "theta": theta,
-                                                                                    "threshold_intersect": threshold_intersect,
-                                                                                    "detection_method": detection_method
-                                                                                }
-                                                                                 if params not in tries:
-                                                                                    tries.append(params)
-                                                                elif use_adaptive_thresholding:
-                                                                     params = {
-                                                                        "preprocess_method": preprocess_method,
-                                                                        "deblur": deblur,
-                                                                        "remove_background": remove_background,
-                                                                        "remove_shadows_flag": remove_shadows_flag,
-                                                                        "use_adaptive_thresholding": use_adaptive_thresholding,
-                                                                        "edge_detector": edge_detector, # Ignored for adaptive
-                                                                        "blur_method": blur_method,
-                                                                        "median_blur_size": median_blur_size,
-                                                                        "rho": rho,
-                                                                        "theta": theta,
-                                                                        "threshold_intersect": threshold_intersect,
-                                                                        "detection_method": detection_method
-                                                                    }
-                                                                     if params not in tries:
-                                                                        tries.append(params)
-                                            elif detection_method == 'contour':
-                                                 for contour_area_threshold_ratio in contour_area_threshold_ratios:
-                                                    params = {
-                                                        "preprocess_method": preprocess_method,
-                                                        "deblur": deblur,
-                                                        "remove_background": remove_background,
-                                                        "remove_shadows_flag": remove_shadows_flag,
-                                                        "use_adaptive_thresholding": use_adaptive_thresholding,
-                                                        "blur_method": blur_method,
-                                                        "median_blur_size": median_blur_size,
-                                                        "detection_method": detection_method,
-                                                        "contour_area_threshold_ratio": contour_area_threshold_ratio
-                                                    }
-                                                    if params not in tries:
-                                                         tries.append(params)
-                                            elif detection_method == 'shi_tomasi':
-                                                 for shi_tomasi_maxCorners in shi_tomasi_maxCorners_values:
-                                                     for shi_tomasi_qualityLevel in shi_tomasi_qualityLevel_values:
-                                                         for shi_tomasi_minDistance in shi_tomasi_minDistance_values:
-                                                             params = {
-                                                                 "preprocess_method": preprocess_method,
-                                                                 "deblur": deblur,
-                                                                 "remove_background": remove_background,
-                                                                 "remove_shadows_flag": remove_shadows_flag,
-                                                                 "use_adaptive_thresholding": use_adaptive_thresholding,
-                                                                 "blur_method": blur_method,
-                                                                 "median_blur_size": median_blur_size,
-                                                                 "detection_method": detection_method,
-                                                                 "shi_tomasi_maxCorners": shi_tomasi_maxCorners,
-                                                                 "shi_tomasi_qualityLevel": shi_tomasi_qualityLevel,
-                                                                 "shi_tomasi_minDistance": shi_tomasi_minDistance
-                                                             }
-                                                             if params not in tries:
-                                                                  tries.append(params)
-
-                                            elif detection_method == 'harris':
-                                                for harris_threshold in harris_threshold_values:
-                                                     params = {
-                                                         "preprocess_method": preprocess_method,
-                                                         "deblur": deblur,
-                                                         "remove_background": remove_background,
-                                                         "remove_shadows_flag": remove_shadows_flag,
-                                                         "use_adaptive_thresholding": use_adaptive_thresholding,
-                                                         "blur_method": blur_method,
-                                                         "median_blur_size": median_blur_size,
-                                                         "detection_method": detection_method,
-                                                         "harris_threshold": harris_threshold
-                                                     }
-                                                     if params not in tries:
-                                                          tries.append(params)
-
-                                            elif detection_method == 'hough_lines_p':
-                                                for hough_p_threshold in hough_p_threshold_values:
-                                                    for hough_p_minLineLength in hough_p_minLineLength_values:
-                                                        for hough_p_maxLineGap in hough_p_maxLineGap_values:
-                                                             params = {
-                                                                 "preprocess_method": preprocess_method,
-                                                                 "deblur": deblur,
-                                                                 "remove_background": remove_background,
-                                                                 "remove_shadows_flag": remove_shadows_flag,
-                                                                 "use_adaptive_thresholding": use_adaptive_thresholding,
-                                                                 "edge_detector": edge_detector,
-                                                                 "blur_method": blur_method,
-                                                                 "median_blur_size": median_blur_size,
-                                                                 "rho": rho,
-                                                                 "theta": theta,
-                                                                 "detection_method": detection_method,
-                                                                 "hough_p_threshold": hough_p_threshold,
-                                                                 "hough_p_minLineLength": hough_p_minLineLength,
-                                                                 "hough_p_maxLineGap": hough_p_maxLineGap
-                                                             }
-                                                             if params not in tries:
-                                                                  tries.append(params)
-
-
-            print(f"Toplam {len(tries)} deneme yapılacak.")
-
-            for i, params in enumerate(tries):
-                print(f"\n🔁 Deneme {i+1}/{len(tries)}: {params}")
-                try:
-                    result = image.correct_perspective_enhanced(
-                        image,
-                        preprocess_method=params.get("preprocess_method", 'default'),
-                        deblur=params.get("deblur", False),
-                        remove_background=params.get("remove_background", False),
-                        remove_shadows_flag=params.get("remove_shadows_flag", False),
-                        use_adaptive_thresholding=params.get("use_adaptive_thresholding", False),
-                        edge_detector=params.get("edge_detector", 'canny'),
-                        blur_method=params.get("blur_method", 'median'),
-                        median_blur_size=params.get("median_blur_size", 51),
-                        canny_threshold_max=params.get("canny_threshold_max", 140),
-                        canny_threshold_min=params.get("canny_threshold_min", 30),
-                        sobel_threshold_min=params.get("sobel_threshold_min", 5),
-                        sobel_threshold_max=params.get("sobel_threshold_max", 255),
-                        rho=params.get("rho", 1),
-                        theta=params.get("theta", np.pi/180),
-                        threshold_intersect=params.get("threshold_intersect", 250),
-                        detection_method=params.get("detection_method", 'hough'),
-                        contour_area_threshold_ratio=params.get("contour_area_threshold_ratio", 0.05),
-                        shi_tomasi_maxCorners=params.get("shi_tomasi_maxCorners", 100),
-                        shi_tomasi_qualityLevel=params.get("shi_tomasi_qualityLevel", 0.01),
-                        shi_tomasi_minDistance=params.get("shi_tomasi_minDistance", 10),
-                        harris_threshold=params.get("harris_threshold", 0.01),
-                        hough_p_threshold=params.get("hough_p_threshold", 50),
-                        hough_p_minLineLength=params.get("hough_p_minLineLength", 50),
-                        hough_p_maxLineGap=params.get("hough_p_maxLineGap", 10),
-                        intermediate=intermediate
-                    )
-                    print("✅ Başarılı!")
-                    return result
-                except Exception as e:
-                    print(f"⛔ Deneme {i+1}/{len(tries)} başarısız oldu: {e}")
-                    continue
-            raise RuntimeError("Tüm denemeler başarısız oldu.")
-
-        def run(self, image: Image) -> Image:
-            # ... (run metodunuzun içeriği) ...
-            img = Image.get_frame(img=image, redis_db=self.redis_db)
-            if img is None or img.value is None:
-                raise ValueError("No input image provided or failed to load.")
-
-            # _apply_perspective metodunuzu burada çağırın.
-            # Bu metodun tanımını ve döndürdüğü değerleri kontrol etmeniz gerekebilir.
-            # Eğer _apply_perspective metodunuz yoksa veya bu satırda hata alıyorsanız,
-            # bu metodun implementasyonunu eklemeniz veya düzeltmeniz gerekecektir.
+        for i, params in enumerate(tries):
+            print(f"\n🔁 Deneme {i+1}/{len(tries)}: {params}")
             try:
-                warped, corrected_boxes, src_quad, (out_w, out_h) = self._apply_perspective(src_img)
-            except AttributeError:
-                raise NotImplementedError("'_apply_perspective' metodu tanımlanmamış veya erişilemiyor.")
+                # self.correct_perspective_enhanced metodunu çağırın
+                # Bu metod artık 3 değer döndürüyor: corrected_image, src_quad, output_size
+                corrected_image, src_quad, output_size = self.correct_perspective_enhanced(
+                    src_img,
+                    preprocess_method=params.get("preprocess_method", 'default'),
+                    deblur=params.get("deblur", False),
+                    remove_background=params.get("remove_background", False),
+                    remove_shadows_flag=params.get("remove_shadows_flag", False),
+                    use_adaptive_thresholding=params.get("use_adaptive_thresholding", False),
+                    edge_detector=params.get("edge_detector", 'canny'),
+                    blur_method=params.get("blur_method", 'median'),
+                    median_blur_size=params.get("median_blur_size", 51),
+                    canny_threshold_max=params.get("canny_threshold_max", 140),
+                    canny_threshold_min=params.get("canny_threshold_min", 30),
+                    sobel_threshold_min=params.get("sobel_threshold_min", 5),
+                    sobel_threshold_max=params.get("sobel_threshold_max", 255),
+                    rho=params.get("rho", 1),
+                    theta=params.get("theta", np.pi/180),
+                    threshold_intersect=params.get("threshold_intersect", 250),
+                    detection_method=params.get("detection_method", 'hough'),
+                    contour_area_threshold_ratio=params.get("contour_area_threshold_ratio", 0.05),
+                    shi_tomasi_maxCorners=params.get("shi_tomasi_maxCorners", 100),
+                    shi_tomasi_qualityLevel=params.get("shi_tomasi_qualityLevel", 0.01),
+                    shi_tomasi_minDistance=params.get("shi_tomasi_minDistance", 10),
+                    harris_threshold=params.get("harris_threshold", 0.01),
+                    hough_p_threshold=params.get("hough_p_threshold", 50),
+                    hough_p_minLineLength=params.get("hough_p_minLineLength", 50),
+                    hough_p_maxLineGap=params.get("hough_p_maxLineGap", 10)
+                )
+                print("✅ Başarılı!")
+                # corrected_boxes için bir mantık yoksa şimdilik boş bir liste döndürün
+                # Eğer dönüştürülmüş bounding box'lar bekleniyorsa, burada hesaplanmalıdır.
+                corrected_boxes = []
+                return corrected_image, corrected_boxes, src_quad, output_size
             except Exception as e:
-                raise RuntimeError(f"Perspektif düzeltme sırasında hata oluştu: {e}")
+                print(f"⛔ Deneme {i+1}/{len(tries)} başarısız oldu: {e}")
+                continue
+        raise RuntimeError("Tüm denemeler başarısız oldu.")
 
-            img.value = warped
-            self.image = Image.set_frame(img=img, package_uID=self.uID, redis_db=self.redis_db)
-            self.context = {
-                "src_quad": src_quad.tolist(),
-                "output_size": [out_w, out_h],
-                "corrected_boxes": corrected_boxes,
-                "keep_side": self.keep_side,
-                # Bu özelliklerin de request.data'dan gelmesi veya varsayılan değerleri olması gerekebilir.
-                "warp_image": self.warp_image_flag,  # Aynı şekilde
-            }
-            return build_response(context=self)
+    def run(self) -> Image: # 'image' parametresi kaldırıldı
+        # self.image, __init__ içinde zaten ayarlanmıştır
+        img = Image.get_frame(img=self.image, redis_db=self.redis_db) # self.image kullanıldı
+        if img is None or img.value is None:
+            raise ValueError("No input image provided or failed to load.")
+
+        src_img = self._prepare_image(img.value)
+
+        # _apply_perspective metodunu çağırın. Bu metod artık run'ın beklediği tüm değerleri döndürüyor.
+        warped, corrected_boxes, src_quad, (out_w, out_h) = self._apply_perspective(src_img)
+
+        img.value = warped
+        self.image = Image.set_frame(img=img, package_uID=self.uID, redis_db=self.redis_db)
+
+        self.context = {
+            "src_quad": src_quad.tolist(),
+            "output_size": [out_w, out_h],
+            "corrected_boxes": corrected_boxes,
+            "keep_side": self.keep_side, # __init__ içinde PackageModel'den alınacak
+            "warp_image": self.warp_image_flag, # __init__ içinde PackageModel'den alınacak
+        }
+        return build_response(context=self)
 
 if __name__ == "__main__":
     Executor(sys.argv[1]).run()
