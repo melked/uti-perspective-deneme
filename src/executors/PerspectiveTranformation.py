@@ -1,13 +1,10 @@
 import sys
-import os
 from itertools import combinations
 import cv2
 import numpy as np
-# from sklearn.cluster import KMeans # KMeans için gerekli - Kaldırıldı
+import os
 
-# Sistem yolunu güncelleyin
-# Removed the line causing NameError: name '__file__' is not defined
-# sys.path.append(os.path.join(os.path.dirname(__file__), "../../../../"))
+sys.path.append(os.path.join(os.path.dirname(__file__), "../../../../"))
 
 from sdks.novavision.src.media.image import Image
 from sdks.novavision.src.base.component import Component
