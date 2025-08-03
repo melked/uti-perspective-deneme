@@ -1,10 +1,6 @@
-"""
-Performs perspective correction using corner and edge detection.
-Handles dark/light docs, backgrounds, blurry images, and various conditions.
-"""
-
 import os
 import sys
+import json
 import cv2
 import numpy as np
 
@@ -21,9 +17,12 @@ class PerspectiveTransformation(Component):
     def __init__(self, request, bootstrap):
         super().__init__(request, bootstrap)
         self.request.model = PackageModel(**(self.request.data))
+        
         self.image = self.request.get_param("inputImage")
-        self.perspective_mode = self.request.get_param("PerspectiveTypeMode")["value"]["name"]  # "Auto" or "Advanced"
-        self.keep_side = self.request.get_param("KeepSide")["value"]["value"]
+
+        # Güvenli config alma
+        self.perspective_mode = self._safe_get_config("PerspectiveTypeMode", key_chain=["value", "name"])
+        self.keep_side = self._safe_get_config("KeepSide", key_chain=["value"])
         self.output_width = self.request.get_param("OutputWidth")
         self.output_height = self.request.get_param("OutputHeight")
 
@@ -31,19 +30,31 @@ class PerspectiveTransformation(Component):
     def bootstrap(config: dict) -> dict:
         return {}
 
+    def _safe_get_config(self, key, key_chain=None):
+        value = self.request.get_param(key)
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except Exception:
+                pass
+        if key_chain:
+            for k in key_chain:
+                value = value[k]
+        return value
+
     def correct_perspective_auto(self, image):
-        # 1. Ön işleme (adaptif CLAHE + gamma düzeltme + unsharp mask)
+        # 1. Gri + CLAHE + gamma düzeltme + sharp
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8)).apply(gray)
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)).apply(gray)
 
         gamma = 1.5
-        table = np.array([(i / 255.0) ** (1.0 / gamma) * 255 for i in np.arange(0, 256)]).astype("uint8")
+        table = np.array([(i / 255.0) ** (1.0 / gamma) * 255 for i in range(256)]).astype("uint8")
         clahe_gamma = cv2.LUT(clahe, table)
 
         blurred = cv2.GaussianBlur(clahe_gamma, (3, 3), 0)
         sharp = cv2.addWeighted(clahe_gamma, 1.5, blurred, -0.5, 0)
 
-        # 2. Kenar tespiti
+        # 2. Canny kenar tespiti
         edges = cv2.Canny(sharp, 50, 150)
 
         # 3. Contour bulma
@@ -53,25 +64,14 @@ class PerspectiveTransformation(Component):
         for cnt in contours:
             peri = cv2.arcLength(cnt, True)
             approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
-
             if len(approx) == 4:
                 pts = approx.reshape(4, 2)
                 break
         else:
-            return image  # köşe bulunamazsa orijinali döndür
+            return image  # dört köşe bulunamadıysa orijinali döndür
 
-        # 4. Dörtgen sıralama (top-left, top-right, bottom-right, bottom-left)
-        def order_points(pts):
-            rect = np.zeros((4, 2), dtype="float32")
-            s = pts.sum(axis=1)
-            diff = np.diff(pts, axis=1)
-            rect[0] = pts[np.argmin(s)]
-            rect[2] = pts[np.argmax(s)]
-            rect[1] = pts[np.argmin(diff)]
-            rect[3] = pts[np.argmax(diff)]
-            return rect
-
-        rect = order_points(pts)
+        # 4. Köşeleri sırala
+        rect = self._order_points(pts)
         (tl, tr, br, bl) = rect
 
         # 5. Perspektif düzeltme
@@ -95,10 +95,17 @@ class PerspectiveTransformation(Component):
 
         return warped
 
-    def correct_perspective_advanced(self, image):
-        # Advanced: Şu an Auto ile aynı çalışıyor.
-        # Farklı işlem uygulanacaksa burada ayrıştırılır.
-        return self.correct_perspective_auto(image)
+    def _order_points(self, pts):
+        rect = np.zeros((4, 2), dtype="float32")
+        s = pts.sum(axis=1)
+        diff = np.diff(pts, axis=1)
+
+        rect[0] = pts[np.argmin(s)]  # top-left
+        rect[2] = pts[np.argmax(s)]  # bottom-right
+        rect[1] = pts[np.argmin(diff)]  # top-right
+        rect[3] = pts[np.argmax(diff)]  # bottom-left
+
+        return rect
 
     def resize_output(self, image):
         if self.keep_side:
@@ -110,13 +117,11 @@ class PerspectiveTransformation(Component):
         img = Image.get_frame(img=self.image, redis_db=self.redis_db)
         original = img.value
 
-        # Perspective düzeltme
         if self.perspective_mode == "Auto":
             corrected = self.correct_perspective_auto(original)
         else:
-            corrected = self.correct_perspective_advanced(original)
+            corrected = self.correct_perspective_auto(original)  # şimdilik aynı, ileride advanced ayrılabilir
 
-        # Boyut ayarı
         final = self.resize_output(corrected)
         img.value = final
 
