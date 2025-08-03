@@ -1,12 +1,9 @@
 import os
 import sys
 from itertools import combinations
-
 import cv2
 import numpy as np
-from typing import Any, Optional, Tuple, List
 
-from tensorflow.python.ops.clustering_ops import KMeans
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../../../"))
 
@@ -17,8 +14,26 @@ from components.PerspectiveTransformation.src.models.PackageModel import Package
 from components.PerspectiveTransformation.src.utils.response import build_response
 
 
+
+def order_points(pts):
+    # Noktaları numpy dizisine çevir
+    pts = np.array(pts)
+
+    # Noktaların toplamına göre sol üst ve sağ altı bul
+    s = pts.sum(axis=1)
+    rect = np.zeros((4, 2), dtype="float32")
+    rect[0] = pts[np.argmin(s)]  # Sol üst
+    rect[2] = pts[np.argmax(s)]  # Sağ alt
+
+    # Farklarına göre sağ üst ve sol altı bul
+    diff = np.diff(pts, axis=1)
+    rect[1] = pts[np.argmin(diff)]  # Sağ üst
+    rect[3] = pts[np.argmax(diff)]  # Sol alt
+
+    return rect
+
 def get_intersections(img, lines):
-    """Çizgilerin kesişim noktalarını hesaplar"""
+
     height, width = img.shape[:2]
     intersections = []
     for i, line1 in enumerate(lines):
@@ -98,34 +113,29 @@ def to_cartesian(img, lines):
         cartesian.append((x1, y1, x2, y2))
     return cartesian
 
-def kmeans_corners(points, k=4):
-    """K-means ile fazla köşeleri 4'e indir"""
-    if len(points) <= k:
-        return points
-    kmeans = KMeans(n_clusters=k, n_init=10) # Add n_init
-    kmeans.fit(points)
-    centers = kmeans.cluster_centers_
-    return centers.astype(np.float32)
+def approximate_4_corners(points):
 
-# ----- EK TESPİT ETME KODLARI (KARMAŞIK ARKA PLANLAR İÇİN) -----
+    if len(points) <= 4:
+        return points.astype(np.float32)
+
+    center = np.mean(points, axis=0)
+    distances = np.linalg.norm(points - center, axis=1)
+    idxs = np.argsort(distances)[-4:]
+    return points[idxs].astype(np.float32)
 
 def find_document_contours(img_gray, area_threshold_ratio=0.05):
-    """Kontur tespiti ile olası belge kenarlarını bulur."""
-    # Find contours
+
     contours, _ = cv2.findContours(img_gray, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
 
-    # Sort contours by area and keep only the largest ones
     contours = sorted(contours, key=cv2.contourArea, reverse=True)
 
     document_contours = []
     img_area = img_gray.shape[0] * img_gray.shape[1]
 
     for cnt in contours:
-        # Approximate the contour to a polygon
         peri = cv2.arcLength(cnt, True)
         approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
 
-        # If the approximated contour has 4 points and a significant area, consider it a potential document
         if len(approx) == 4 and cv2.contourArea(cnt) > img_area * area_threshold_ratio:
             document_contours.append(approx)
 
@@ -135,7 +145,6 @@ def get_corners_from_contours(contours):
     """Konturlardan köşe noktalarını çıkarır."""
     corners = []
     for contour in contours:
-        # Reshape the contour points to a list of points
         points = contour.reshape(-1, 2)
         corners.extend(points)
     return np.array(corners, dtype=np.float32)
@@ -150,9 +159,6 @@ def detect_corners_shi_tomasi(img_gray, maxCorners=100, qualityLevel=0.01, minDi
 def detect_corners_harris(img_gray, blockSize=2, ksize=3, k=0.04, threshold=0.01):
     """Harris köşe tespit yöntemi"""
     dst = cv2.cornerHarris(img_gray, blockSize, ksize, k)
-    # Result is dilated for marking the corners, not important for the detection itself
-    # dst = cv2.dilate(dst,None)
-    # Threshold for an optimal value, it may vary depending on the image.
     corners = np.argwhere(dst > threshold * dst.max())
     return np.float32(corners).reshape(-1, 2)
 
@@ -160,23 +166,16 @@ def find_lines_probabilistic_hough(edges, rho=1, theta=np.pi/180, threshold=50, 
     """Olasılıksal Hough Dönüşümü ile çizgi segmentlerini bulur."""
     lines = cv2.HoughLinesP(edges, rho, theta, threshold, minLineLength=minLineLength, maxLineGap=maxLineGap)
     if lines is not None:
-        # Reshape to a list of lines (x1, y1, x2, y2)
         return lines.reshape(-1, 4)
     return np.array([], dtype=np.int32)
 
-# Helper to get intersections from line segments (Probabilistic Hough)
 def get_intersections_from_segments(segments, img_shape, img=None):
     """Çizgi segmentlerinin kesişim noktalarını hesaplar."""
     height, width = img_shape[:2]
     intersections = []
-    # Convert segments to line equations or extend them for intersection
-    # A simpler approach is to use the get_intersections function if the segments are long enough
-    # Or extend segments to image boundaries
     extended_lines = []
     for x1, y1, x2, y2 in segments:
-        # Extend the line segment to the image boundaries (conceptual)
-        # This is a simplified approach and might not be accurate for all cases
-        # A more robust method would involve calculating the line equation
+
         if x2 - x1 == 0: # Vertical line
             extended_lines.append((x1, 0, x1, height))
         elif y2 - y1 == 0: # Horizontal line
@@ -228,8 +227,39 @@ class PerspectiveTransformation(Component):
     def __init__(self, request, bootstrap):
         super().__init__(request, bootstrap)
         self.context = {}
-        self.request.model = PackageModel(**(self.request.data))
-        self.image = self.request.get_param("inputImage")
+
+        # self.request.data'nın bir sözlük olduğundan emin olun ve PackageModel'i güvenle başlatın
+        if not isinstance(self.request.data, dict):
+            print(
+                f"UYARI: self.request.data bir sözlük değil, tipi: {type(self.request.data)}. Boş bir sözlük kullanılıyor.")
+            model_data = {}
+        else:
+            model_data = self.request.data
+
+        try:
+            self.request.model = PackageModel(**model_data)
+        except TypeError as e:
+            # PackageModel'in beklediği argümanlar eksik veya yanlış olabilir
+            print(f"HATA: PackageModel başlatılırken TypeError oluştu: {e}")
+            print(f"self.request.data içeriği: {model_data}")
+            raise RuntimeError("PackageModel başlatılamadı, lütfen request.data'yı kontrol edin.") from e
+        except Exception as e:
+            # Diğer olası hataları yakala
+            print(f"HATA: PackageModel başlatılırken beklenmeyen bir hata oluştu: {e}")
+            print(f"self.request.data içeriği: {model_data}")
+            raise RuntimeError("PackageModel başlatılamadı.") from e
+
+        # inputImage parametresini güvenle alın
+        try:
+            self.image = self.request.get_param("inputImage")
+            if self.image is None:
+                print("UYARI: 'inputImage' parametresi bulunamadı veya değeri None.")
+        except AttributeError:
+            print("HATA: 'request' nesnesinin 'get_param' metodu yok.")
+            raise RuntimeError("Request nesnesi geçersiz, 'get_param' metodu eksik.")
+        except Exception as e:
+            print(f"HATA: 'inputImage' parametresi alınırken beklenmeyen bir hata oluştu: {e}")
+            raise RuntimeError("'inputImage' parametresi alınamadı.") from e
 
     @staticmethod
     def bootstrap(config: dict) -> dict:
@@ -354,11 +384,7 @@ class PerspectiveTransformation(Component):
         return result
 
 
-
-
-    # ----- ANA PERSPEKTİF DÜZELTME FONKSİYONU (Geliştirilmiş) -----
-
-    def correct_perspective_enhanced(img,
+    def correct_perspective_enhanced(self,img,
                                       preprocess_method='default', # 'default', 'aggressive', 'small', 'advanced'
                                       deblur=False,
                                       remove_background=False, # GrabCut
@@ -392,35 +418,33 @@ class PerspectiveTransformation(Component):
                                       hough_p_maxLineGap=10,
                                       intermediate=True):
 
-        # Ön işleme
         if preprocess_method == 'aggressive':
-            preprocessed = img.preprocess_image_aggressive(img)
+            preprocessed = self.preprocess_image_aggressive(img)
         elif preprocess_method == 'small':
-            preprocessed = img.preprocess_image_small(img)
+            preprocessed = self.preprocess_image_small(img)
         elif preprocess_method == 'advanced':
-            preprocessed = img.preprocess_image_advanced(img)
+            preprocessed = self.preprocess_image_advanced(img)
         else: # 'default'
-            preprocessed = img.preprocess_image(img)
+            preprocessed = self.preprocess_image(img)
 
         if deblur:
-            preprocessed = img.sharpen_image(preprocessed)
+            preprocessed = self.sharpen_image(preprocessed)
 
         if remove_background:
-            preprocessed = img.remove_background_grabcut(preprocessed)
+            preprocessed = self.remove_background_grabcut(preprocessed)
 
         if remove_shadows_flag:
-            preprocessed = img.remove_shadows(preprocessed)
+            preprocessed = self.remove_shadows(preprocessed)
 
 
         gray = cv2.cvtColor(preprocessed, cv2.COLOR_BGR2GRAY)
 
-        # Apply blur
         if blur_method == 'median':
              blurred = cv2.medianBlur(gray, median_blur_size)
         elif blur_method == 'bilateral':
-             blurred = cv2.bilateralFilter(gray, 9, 75, 75) # Default parameters
+             blurred = cv2.bilateralFilter(gray, 9, 75, 75)
         else:
-             blurred = gray # No blur
+             blurred = gray
 
 
         # Perform detection based on the selected method
@@ -451,8 +475,9 @@ class PerspectiveTransformation(Component):
                     if len(lines) >= 4:
                         cartesian = to_cartesian(img, lines)
                         intersections = get_intersections(img, cartesian)
-                        if len(intersections) >= 4:
-                            corners = kmeans_corners(intersections, k=4)
+                        if corners is not None and len(corners) > 4:
+                            corners = approximate_4_corners(corners)
+
                 detection_output_img = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR) # Convert edges to color for display
 
 
@@ -486,7 +511,8 @@ class PerspectiveTransformation(Component):
                 minDistance=shi_tomasi_minDistance
             )
             if corners is not None and len(corners) > 4:
-                corners = kmeans_corners(corners, k=4)
+                corners = approximate_4_corners(corners)
+
             elif corners is not None and len(corners) != 4:
                  corners = None # Ensure exactly 4 corners are found or set to None
 
@@ -508,7 +534,8 @@ class PerspectiveTransformation(Component):
                  threshold=harris_threshold
              )
              if corners is not None and len(corners) > 4:
-                 corners = kmeans_corners(corners, k=4)
+                 corners = approximate_4_corners(corners)
+
              elif corners is not None and len(corners) != 4:
                   corners = None # Ensure exactly 4 corners are found or set to None
 
@@ -551,7 +578,8 @@ class PerspectiveTransformation(Component):
                      # Find intersections from these line segments and then corners
                      intersections_p = get_intersections_from_segments(lines_p, img.shape)
                      if len(intersections_p) >= 4:
-                         corners = kmeans_corners(intersections_p, k=4)
+                         ordered = order_points(np.array(intersections_p[:4]))
+                         center = np.mean(ordered, axis=0)
 
             # Visualize detected lines on the original image for intermediate display
             if lines_p is not None:
@@ -562,10 +590,8 @@ class PerspectiveTransformation(Component):
         if corners is None or len(corners) < 4:
              raise ValueError(f"Detection method '{detection_method}' failed to find 4 corners.")
 
-        # Reorder corners
         corners = reorder_corners(corners)
 
-        # Hedef boyut hesaplama (A4 oranı yaklaşık 0.707)
         h_img, w_img = img.shape[:2]
         min_dim = min(h_img, w_img)
         if h_img > w_img:
@@ -583,8 +609,6 @@ class PerspectiveTransformation(Component):
         else:
             return corrected
 
-
-    # ----- GELİŞTİRİLMİŞ TÜM PARAMETRELERİ VE TESPİT YÖNTEMLERİNİ DENEYEN FONKSİYON -----
 
     def correct_perspective_auto_advanced_detection(img, intermediate=True):
         def try_all_tries(image):
@@ -834,33 +858,35 @@ class PerspectiveTransformation(Component):
                     continue
             raise RuntimeError("Tüm denemeler başarısız oldu.")
 
-
-        def run(self):
-            img = Image.get_frame(img=self.image, redis_db=self.redis_db)
+        def run(self, image: Image) -> Image:
+            # ... (run metodunuzun içeriği) ...
+            img = Image.get_frame(img=image, redis_db=self.redis_db)
             if img is None or img.value is None:
                 raise ValueError("No input image provided or failed to load.")
 
-            src_img = self._prepare_image(img.value)
+            # _apply_perspective metodunuzu burada çağırın.
+            # Bu metodun tanımını ve döndürdüğü değerleri kontrol etmeniz gerekebilir.
+            # Eğer _apply_perspective metodunuz yoksa veya bu satırda hata alıyorsanız,
+            # bu metodun implementasyonunu eklemeniz veya düzeltmeniz gerekecektir.
+            try:
+                warped, corrected_boxes, src_quad, (out_w, out_h) = self._apply_perspective(src_img)
+            except AttributeError:
+                raise NotImplementedError("'_apply_perspective' metodu tanımlanmamış veya erişilemiyor.")
+            except Exception as e:
+                raise RuntimeError(f"Perspektif düzeltme sırasında hata oluştu: {e}")
 
-            # Perspektif düzeltmeyi uygula
-            warped, corrected_boxes, src_quad, (out_w, out_h) = self._apply_perspective(src_img)
-
-            # Güncellenen görüntüyü pakete set et
             img.value = warped
             self.image = Image.set_frame(img=img, package_uID=self.uID, redis_db=self.redis_db)
 
-
-            # Yanıt için context hazırla
             self.context = {
                 "src_quad": src_quad.tolist(),
                 "output_size": [out_w, out_h],
                 "corrected_boxes": corrected_boxes,
                 "keep_side": self.keep_side,
-                "warp_image": self.warp_image_flag,
+                # Bu özelliklerin de request.data'dan gelmesi veya varsayılan değerleri olması gerekebilir.
+                "warp_image": self.warp_image_flag,  # Aynı şekilde
             }
-
             return build_response(context=self)
 
-
-if __name__ == "__main__":
-    Executor(sys.argv[1]).run()
+    if __name__ == "__main__":
+        Executor(sys.argv[1]).run()
