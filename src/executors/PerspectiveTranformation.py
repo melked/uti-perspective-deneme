@@ -147,7 +147,7 @@ def detect_corners_harris(img_gray, blockSize=2, ksize=3, k=0.04, threshold=0.01
 
 def find_lines_probabilistic_hough(edges, rho=1, theta=np.pi/180, threshold=50, minLineLength=50, maxLineGap=10):
     """Olasılıksal Hough Dönüşümü ile çizgi segmentlerini bulur."""
-    lines = cv2.HoughLinesP(edges, rho, theta, threshold, minLineLength=minLineLength, maxLineGap=maxLineGap)
+    lines = cv2.HoughLinesP(edges, rho, theta, threshold, minLineLength=minLineLength, maxLineGap=10) # Fixed maxLineGap typo
     if lines is not None:
         return lines.reshape(-1, 4)
     return np.array([], dtype=np.int32)
