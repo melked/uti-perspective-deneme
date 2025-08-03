@@ -1,19 +1,21 @@
 import os
 import sys
-from itertools import combinations
 import cv2
 import numpy as np
+from itertools import combinations # Added for parameter combinations
 
-sys.path.append(os.path.join(os.path.dirname(__file__), "../../../../"))
+
+sys.path.append(os.path.join(os.path.dirname(__file__), '../../../../'))
 
 from sdks.novavision.src.media.image import Image
 from sdks.novavision.src.base.component import Component
 from sdks.novavision.src.helper.executor import Executor
-from components.PerspectiveTransformation.src.models.PackageModel import PackageModel
 from components.PerspectiveTransformation.src.utils.response import build_response
+from components.PerspectiveTransformation.src.models.PackageModel import PackageModel
 
+
+# Keep the original image processing functions from the other cell
 def order_points(pts):
-    # Noktaları numpy dizisine çevir
     pts = np.array(pts)
     s = pts.sum(axis=1)
     rect = np.zeros((4, 2), dtype="float32")
@@ -25,7 +27,6 @@ def order_points(pts):
     return rect
 
 def get_intersections(img, lines):
-    """Çizgilerin kesişim noktalarını hesaplar"""
     height, width = img.shape[:2]
     intersections = []
     for i, line1 in enumerate(lines):
@@ -364,8 +365,22 @@ class PerspectiveTransformation(Component):
 
         # PackageModel'den keep_side ve warp_image_flag değerlerini alın
         # Eğer PackageModel'de bu özellikler yoksa varsayılan değerler atayın
-        self.keep_side = getattr(self.request.model, 'keep_side', 'auto') # Varsayılan değer 'auto'
-        self.warp_image_flag = getattr(self.request.model, 'warp_image', True) # Varsayılan değer True
+        # Assuming the structure of PackageModel based on the user's provided definition snippet
+        self.keep_side = getattr(getattr(getattr(getattr(self.request.model, 'configs', None), 'executor', None), 'value', None), 'configs', None)
+        self.keep_side = getattr(getattr(self.keep_side, 'drawBBox', None), 'value', False) if self.keep_side else False
+
+        self.output_width = getattr(getattr(getattr(getattr(self.request.model, 'configs', None), 'executor', None), 'value', None), 'configs', None)
+        self.output_width = getattr(getattr(self.output_width, 'outputWidth', None), 'value', 800) if self.output_width else 800
+
+        self.output_height = getattr(getattr(getattr(getattr(self.request.model, 'configs', None), 'executor', None), 'value', None), 'configs', None)
+        self.output_height = getattr(getattr(self.output_height, 'outputHeight', None), 'value', 600) if self.output_height else 600
+
+        self.perspective_mode = getattr(getattr(getattr(getattr(self.request.model, 'configs', None), 'executor', None), 'value', None), 'configs', None)
+        self.perspective_mode = getattr(getattr(self.perspective_mode, 'PerspectiveTypeMode', None), 'value', None)
+        self.perspective_mode = getattr(self.perspective_mode, 'name', 'Auto') if self.perspective_mode else 'Auto'
+
+        self.warp_image_flag = True # Assuming warp_image is always desired
+
 
     @staticmethod
     def bootstrap(config: dict) -> dict:
@@ -584,7 +599,7 @@ class PerspectiveTransformation(Component):
                         intersections = get_intersections(img, cartesian)
                         if len(intersections) >= 4:
                             # Use improved corner selection method
-                            corners = approximate_4_corners(intersections)
+                            corners = select_best_corners(intersections, img.shape)
 
 
         elif detection_method == 'contour':
@@ -603,7 +618,7 @@ class PerspectiveTransformation(Component):
                     potential_corners = get_corners_from_contours([document_contours[0]])
                     if potential_corners is not None and len(potential_corners) >= 4:
                         # Use improved corner selection method
-                        corners = approximate_4_corners(potential_corners)
+                        corners = select_best_corners(potential_corners, img.shape)
 
 
         elif detection_method == 'shi_tomasi':
@@ -617,7 +632,7 @@ class PerspectiveTransformation(Component):
             )
             if potential_corners is not None and len(potential_corners) >= 4:
                  # Use improved corner selection method
-                 corners = approximate_4_corners(potential_corners)
+                 corners = select_best_corners(potential_corners, img.shape)
 
 
         elif detection_method == 'harris':
@@ -632,7 +647,7 @@ class PerspectiveTransformation(Component):
              )
              if potential_corners is not None and len(potential_corners) >= 4:
                  # Use improved corner selection method
-                 corners = approximate_4_corners(potential_corners)
+                 corners = select_best_corners(potential_corners, img.shape)
 
 
         elif detection_method == 'hough_lines_p':
@@ -677,7 +692,7 @@ class PerspectiveTransformation(Component):
                      intersections_p = get_intersections_from_segments(lines_p, img.shape)
                      if len(intersections_p) >= 4:
                          # Use improved corner selection method
-                         corners = approximate_4_corners(intersections_p)
+                         corners = select_best_corners(intersections_p, img.shape)
 
 
         if corners is None or len(corners) != 4: # Ensure exactly 4 corners were found by the simplified method
@@ -696,7 +711,7 @@ class PerspectiveTransformation(Component):
         else:
             new_h, new_w = int(min_dim), int(min_dim / 0.707) # Adjusted to make the shorter side min_dim
             if new_h > h_img * 1.5: new_h = int(h_img * 1.5)
-            if new_w > w_img * 1.5: new_w = int(w_img * 1.5)
+            if new_w > w_img * 1.5: new_w = int(w_w * 1.5) # Fixed variable name
 
 
         destination = np.array([[0,0], [new_w,0], [new_w,new_h], [0,new_h]], dtype=np.float32)
@@ -981,6 +996,7 @@ class PerspectiveTransformation(Component):
             "warp_image": self.warp_image_flag,
         }
         return build_response(context=self)
+
 
 if __name__ == "__main__":
     Executor(sys.argv[1]).run()
