@@ -523,7 +523,7 @@ class PerspectiveTransformation(Component):
     def _apply_perspective(self, src_img: np.ndarray):
         """
         Görüntüye gelişmiş perspektif düzeltme uygular.
-        Farklı parametre kombinasyonlarını dener ve başarılı olan ilkini döndürür.
+        Farklı parametre kombinasyonlarını dener ve başarılı olan firstini döndürür.
         """
         h, w = src_img.shape[:2]
         max_dim = max(h, w)
