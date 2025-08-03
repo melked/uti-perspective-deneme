@@ -3,11 +3,8 @@ import sys
 from itertools import combinations
 import cv2
 import numpy as np
-# from sklearn.cluster import KMeans # KMeans için gerekli - Kaldırıldı
 
-# Sistem yolunu güncelleyin
-# Removed the line causing NameError: name '__file__' is not defined
-# sys.path.append(os.path.join(os.path.dirname(__file__), "../../../../"))
+sys.path.append(os.path.join(os.path.dirname(__file__), "../../../../"))
 
 from sdks.novavision.src.media.image import Image
 from sdks.novavision.src.base.component import Component
@@ -216,51 +213,48 @@ def get_intersections_from_segments(segments, img_shape, img=None):
 def select_best_corners(points, img_shape):
     """
     Selects the best 4 corners from a set of points, prioritizing points near image corners
-    and forming a convex quadrilateral.
+    and forming a convex quadrilateral. Improved selection based on distance from image corners.
     """
     if points is None or len(points) < 4:
         return None
 
-    # Simple approach: prioritize points closest to the four image corners
     h, w = img_shape[:2]
     image_corners = np.array([[0, 0], [w, 0], [w, h], [0, h]], dtype=np.float32)
 
-    best_corners = np.zeros((4, 2), dtype=np.float32)
-    used_point_indices = set()
+    # Find the point closest to each image corner
+    closest_to_image_corners = []
+    for img_corner in image_corners:
+        distances = np.linalg.norm(points - img_corner, axis=1)
+        closest_idx = np.argmin(distances)
+        closest_to_image_corners.append(points[closest_idx])
 
-    for i, img_corner in enumerate(image_corners):
-        min_dist = float('inf')
-        best_point_idx = -1
-        for j, point in enumerate(points):
-            if j not in used_point_indices:
-                dist = np.linalg.norm(point - img_corner)
-                if dist < min_dist:
-                    min_dist = dist
-                    best_point_idx = j
+    corners = np.array(closest_to_image_corners, dtype=np.float32)
 
-        if best_point_idx != -1:
-            best_corners[i] = points[best_point_idx]
-            used_point_indices.add(best_point_idx)
-        else:
-            # If no unused point is found, fall back to outermost selection for this corner
-             fallback_corners = select_outermost_corners(points, k=4)
-             if fallback_corners is not None:
-                  best_corners = fallback_corners
-                  break # Use fallback and exit loop
-             else:
-                 return None # Cannot even find 4 outermost points
+    # Additional check: Ensure the selected corners are somewhat spread out and not clustered
+    # Calculate the minimum distance between any two selected corners
+    min_dist = float('inf')
+    for i in range(4):
+        for j in range(i + 1, 4):
+            dist = np.linalg.norm(corners[i] - corners[j])
+            min_dist = min(min_dist, dist)
+
+    # Define a threshold based on image dimensions (e.g., a percentage of the smaller dimension)
+    threshold_dist = min(h, w) * 0.1 # Example threshold
+
+    if min_dist < threshold_dist:
+        print(f"Warning: Selected corners are too close ({min_dist:.2f} < {threshold_dist:.2f}). Might not be the document corners.")
+        # Fallback to outermost selection if closest points are too close
+        corners = select_outermost_corners(points, k=4)
+        if corners is None:
+            return None
 
 
     # Check if the selected corners form a convex quadrilateral (basic check)
-    # This is a simplification; a more robust check might be needed
     try:
-        # Calculate area using shoelace formula; area should be positive for a non-self-intersecting polygon
-        # Also check orientation (should be consistent, e.g., clockwise or counter-clockwise)
-        # For a convex quad, the cross product of adjacent vectors should have the same sign
-        v1 = best_corners[1] - best_corners[0]
-        v2 = best_corners[2] - best_corners[1]
-        v3 = best_corners[3] - best_corners[2]
-        v4 = best_corners[0] - best_corners[3]
+        v1 = corners[1] - corners[0]
+        v2 = corners[2] - corners[1]
+        v3 = corners[3] - corners[2]
+        v4 = corners[0] - corners[3]
 
         cross_products = [
             np.cross(v1, v2),
@@ -269,12 +263,10 @@ def select_best_corners(points, img_shape):
             np.cross(v4, v1)
         ]
 
-        # Check if all cross products have the same sign (or are zero, indicating collinear points)
-        # A more robust check would handle near-collinear points and small errors
         signs = np.sign(cross_products)
         if np.all(signs >= 0) or np.all(signs <= 0):
-             # Reorder if needed to ensure a consistent order (e.g., top-left, top-right, bottom-right, bottom-left)
-             return reorder_corners(best_corners)
+             # Reorder to ensure consistent order
+             return reorder_corners(corners)
         else:
              print("Warning: Selected corners do not form a convex quadrilateral.")
              return None # Not a convex quad
@@ -702,27 +694,27 @@ class PerspectiveTransformation(Component):
             edge_detectors = ['canny', 'sobel']
             blur_methods = ['median', 'bilateral']
             median_blur_sizes = [3, 5, 7, 11, 21, 31, 41, 51, 61, 71, 81, 91, 101] # Genişletilmiş
-            canny_threshold_max_values = list(range(20, 251, 30)) # Genişletilmiş - Reduced step
-            canny_threshold_min_values = list(range(5, 121, 15)) # Genişletilmiş - Reduced step
-            sobel_threshold_min_values = list(range(5, 101, 15)) # Genişletilmiş - Reduced step
-            sobel_threshold_max_values = list(range(100, 256, 30)) # Genişletilmiş - Reduced step
+            canny_threshold_max_values = list(range(20, 251, 20)) # Genişletilmiş
+            canny_threshold_min_values = list(range(5, 121, 10)) # Genişletilmiş
+            sobel_threshold_min_values = list(range(5, 101, 10)) # Genişletilmiş
+            sobel_threshold_max_values = list(range(100, 256, 20)) # Genişletilmiş
             rho_values = [1, 0.5, 2] # Genişletilmiş
-            theta_values = [np.pi/180, np.pi/360] # Genişletilmiş - Reduced options
-            threshold_intersect_values = list(range(50, 501, 50)) # Genişletilmiş - Reduced step
+            theta_values = [np.pi/180, np.pi/360] # Genişletilmiş
+            threshold_intersect_values = list(range(50, 501, 40)) # Genişletilmiş
             detection_methods = ['hough', 'contour', 'shi_tomasi', 'harris', 'hough_lines_p']
-            contour_area_threshold_ratios = [0.01, 0.05, 0.1] # Genişletilmiş - Reduced options
-            shi_tomasi_maxCorners_values = [100, 200] # Genişletilmiş - Reduced options
-            shi_tomasi_qualityLevel_values = [0.01, 0.05] # Genişletilmiş - Reduced options
-            shi_tomasi_minDistance_values = [10, 30] # Genişletilmiş - Reduced options
-            harris_blockSize_values = [2, 3] # Genişletilmiş - Reduced options
-            harris_ksize_values = [3, 5] # Genişletilmiş - Reduced options (tek olmalı)
-            harris_k_values = [0.04, 0.05] # Genişletilmiş - Reduced options
-            harris_threshold_values = [0.01, 0.05] # Genişletilmiş - Reduced options
-            hough_p_threshold_values = list(range(30, 201, 30)) # Genişletilmiş - Reduced step
-            hough_p_minLineLength_values = list(range(30, 201, 30)) # Genişletilmiş - Reduced step
-            hough_p_maxLineGap_values = list(range(5, 101, 15)) # Genişletilmiş - Reduced step
-            adaptive_block_size_values = [11, 21, 31] # Genişletilmiş (tek ve > 1 olmalı) - Reduced options
-            adaptive_c_value_values = [2, 5, 8] # Genişletilmiş - Reduced options
+            contour_area_threshold_ratios = [0.01, 0.03, 0.05, 0.07, 0.1] # Genişletilmiş
+            shi_tomasi_maxCorners_values = [50, 100, 150, 200] # Genişletilmiş
+            shi_tomasi_qualityLevel_values = [0.01, 0.03, 0.05, 0.07] # Genişletilmiş
+            shi_tomasi_minDistance_values = [10, 20, 30, 40] # Genişletilmiş
+            harris_blockSize_values = [2, 3, 4] # Genişletilmiş
+            harris_ksize_values = [3, 5, 7] # Genişletilmiş (tek olmalı)
+            harris_k_values = [0.04, 0.05, 0.06] # Genişletilmiş
+            harris_threshold_values = [0.005, 0.01, 0.015, 0.02] # Genişletilmiş
+            hough_p_threshold_values = list(range(30, 201, 20)) # Genişletilmiş
+            hough_p_minLineLength_values = list(range(30, 201, 20)) # Genişletilmiş
+            hough_p_maxLineGap_values = list(range(5, 101, 10)) # Genişletilmiş
+            adaptive_block_size_values = [11, 15, 21, 25, 31, 35, 41] # Genişletilmiş (tek ve > 1 olmalı)
+            adaptive_c_value_values = [2, 4, 6, 8, 10] # Genişletilmiş
 
 
             for preprocess_method in preprocess_methods:
