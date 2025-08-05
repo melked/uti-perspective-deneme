@@ -2,6 +2,7 @@ import os
 import sys
 import cv2
 import numpy as np
+from typing import Optional
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../../../"))
 
@@ -12,22 +13,136 @@ from components.PerspectiveTransformation.src.utils.response import build_respon
 from components.PerspectiveTransformation.src.models.PackageModel import PackageModel
 
 
-class PerspectiveTransformation(Component):
-    """
-    Auto perspective correction with edge enhancement.
-    Detects document-like quadrilateral and warps it.
-    """
+def _order_points(pts: np.ndarray) -> np.ndarray:
+    pts = pts.reshape(4, 2)
+    rect = np.zeros((4, 2), dtype=np.float32)
+    s = pts.sum(axis=1)
+    diff = np.diff(pts, axis=1)
+    rect[0] = pts[np.argmin(s)]
+    rect[2] = pts[np.argmax(s)]
+    rect[1] = pts[np.argmin(diff)]
+    rect[3] = pts[np.argmax(diff)]
+    return rect
 
+
+def _four_point_transform(image: np.ndarray, pts: np.ndarray) -> np.ndarray:
+    rect = _order_points(pts)
+    (tl, tr, br, bl) = rect
+
+    widthA = np.linalg.norm(br - bl)
+    widthB = np.linalg.norm(tr - tl)
+    maxWidth = int(round(max(widthA, widthB)))
+
+    heightA = np.linalg.norm(tr - br)
+    heightB = np.linalg.norm(tl - bl)
+    maxHeight = int(round(max(heightA, heightB)))
+
+    dst = np.array([
+        [0, 0],
+        [maxWidth - 1, 0],
+        [maxWidth - 1, maxHeight - 1],
+        [0, maxHeight - 1]
+    ], dtype=np.float32)
+
+    M = cv2.getPerspectiveTransform(rect, dst)
+
+    warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight), flags=cv2.INTER_LANCZOS4)
+
+    return warped
+
+
+
+def _auto_detect_document_corners_sharpen_adaptive(image: np.ndarray) -> np.ndarray:
+
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    blur = cv2.bilateralFilter(gray, d=9, sigmaColor=75, sigmaSpace=75)
+
+    sharpen_kernel = np.array([[0, -1, 0],
+                               [-1, 5, -1],
+                               [0, -1, 0]])
+    sharpened = cv2.filter2D(blur, -1, sharpen_kernel)
+
+    # 4. Adaptive Threshold
+    thresh = cv2.adaptiveThreshold(
+        sharpened, 255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY_INV, 11, 2
+    )
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    morph = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+    morph = cv2.morphologyEx(morph, cv2.MORPH_OPEN, kernel)
+    contours, _ = cv2.findContours(morph, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+
+    if not contours:
+        h, w = image.shape[:2]
+        return np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], dtype=np.float32)
+
+    contours = sorted(contours, key=cv2.contourArea, reverse=True)
+    img_area = image.shape[0] * image.shape[1]
+    min_area = img_area * 0.01
+
+    for c in contours:
+        if cv2.contourArea(c) < min_area:
+            continue
+        peri = cv2.arcLength(c, True)
+        approx = cv2.approxPolyDP(c, 0.02 * peri, True)
+        if len(approx) == 4 and cv2.isContourConvex(approx):
+            return approx.reshape(4, 2).astype(np.float32)
+
+    h, w = image.shape[:2]
+    return np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], dtype=np.float32)
+
+
+def _auto_detect_document_corners_clahe_canny(image: np.ndarray) -> np.ndarray:
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    clahe_img = clahe.apply(gray)
+
+    edges = cv2.Canny(clahe_img, 30, 150)
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    morph = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+
+    contours, _ = cv2.findContours(morph, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        h, w = image.shape[:2]
+        return np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], dtype=np.float32)
+
+    contours = sorted(contours, key=cv2.contourArea, reverse=True)
+    img_area = image.shape[0] * image.shape[1]
+    min_area = img_area * 0.01
+
+    for c in contours:
+        if cv2.contourArea(c) < min_area:
+            continue
+        peri = cv2.arcLength(c, True)
+        approx = cv2.approxPolyDP(c, 0.02 * peri, True)
+        if len(approx) == 4 and cv2.isContourConvex(approx):
+            return approx.reshape(4, 2).astype(np.float32)
+
+    h, w = image.shape[:2]
+    return np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], dtype=np.float32)
+
+
+def auto_detect_document_corners_dynamic(image: np.ndarray) -> np.ndarray:
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    contrast = gray.max() - gray.min()
+    threshold = 50
+
+    if contrast < threshold:
+        return _auto_detect_document_corners_sharpen_adaptive(image)
+    else:
+        return _auto_detect_document_corners_clahe_canny(image)
+
+
+class PerspectiveTransformation(Component):
     def __init__(self, request, bootstrap):
         super().__init__(request, bootstrap)
         self.context = {}
         self.request.model = PackageModel(**(self.request.data))
-
-        ow = self.request.get_param("OutputWidth")
-        oh = self.request.get_param("OutputHeight")
-        self.output_width = int(ow) if ow is not None else 800
-        self.output_height = int(oh) if oh is not None else 600
-
         self.image = self.request.get_param("inputImage")
 
     @staticmethod
@@ -35,119 +150,32 @@ class PerspectiveTransformation(Component):
         return {}
 
     def _prepare_image(self, img: np.ndarray) -> np.ndarray:
-        """BGR formatına ve uint8 aralığına getir."""
         if img is None or img.size == 0:
             raise ValueError("Input image is empty or None.")
-
         if img.dtype != np.uint8:
             img = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-
         if img.ndim == 2:
             img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
         elif img.shape[-1] == 4:
             img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-
         return img
 
-    def _resize_for_detection(self, img: np.ndarray, max_dim: int = 800):
-        """Hızlı kontur tespiti için küçült."""
-        h, w = img.shape[:2]
-        scale = 1.0
-        m = max(h, w)
-        if m > max_dim:
-            scale = max_dim / float(m)
-            img_small = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
-            return img_small, scale
-        return img, scale
-
-    def _highlight_edges(self, img: np.ndarray) -> np.ndarray:
-        """Kenarları daha belirgin hale getirir."""
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        blur = cv2.GaussianBlur(gray, (5, 5), 0)
-
-        sobelx = cv2.Sobel(blur, cv2.CV_64F, 1, 0, ksize=3)
-        sobely = cv2.Sobel(blur, cv2.CV_64F, 0, 1, ksize=3)
-        gradient = cv2.convertScaleAbs(cv2.addWeighted(sobelx, 0.5, sobely, 0.5, 0))
-
-        edges = cv2.Canny(gradient, 50, 150)
-
-        kernel = np.ones((5, 5), np.uint8)
-        thick_edges = cv2.dilate(edges, kernel, iterations=2)
-        return thick_edges
-
-    def _largest_quad_from_contours(self, contours, min_area_px: float = 1000.0):
-        """En büyük 4 köşe konturu bul."""
-        for c in contours:
-            area = cv2.contourArea(c)
-            if area < min_area_px:
-                continue
-            peri = cv2.arcLength(c, True)
-            approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-            if len(approx) == 4:
-                return approx.reshape(4, 2).astype("float32")
-        return None
-
-    def _quad_from_min_area_rect(self, c):
-        """Fallback: 4 nokta çıkaramazsak min area rect."""
-        rot_rect = cv2.minAreaRect(c)
-        box = cv2.boxPoints(rot_rect)
-        return np.array(box, dtype="float32")
-
-    def _order_points(self, pts: np.ndarray) -> np.ndarray:
-        """Köşeleri TL, TR, BR, BL sıralar."""
-        rect = np.zeros((4, 2), dtype="float32")
-        s = pts.sum(axis=1)
-        rect[0] = pts[np.argmin(s)]  # TL
-        rect[2] = pts[np.argmax(s)]  # BR
-        diff = np.diff(pts, axis=1)
-        rect[1] = pts[np.argmin(diff)]  # TR
-        rect[3] = pts[np.argmax(diff)]  # BL
-        return rect
-
-    def _detect_document_corners(self, img: np.ndarray) -> np.ndarray:
-        img_prep = self._prepare_image(img)
-        small, scale = self._resize_for_detection(img_prep)
-
-        thick_edges = self._highlight_edges(small)
-
-        contours, _ = cv2.findContours(thick_edges.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        contours = sorted(contours, key=cv2.contourArea, reverse=True)
-
-        quad_small = self._largest_quad_from_contours(contours)
-        if quad_small is None and contours:
-            quad_small = self._quad_from_min_area_rect(contours[0])
-
-        if quad_small is not None:
-            quad = quad_small / scale
-            return self._order_points(quad.astype("float32"))
-
-        h, w = img_prep.shape[:2]
-        return np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], dtype="float32")
-
-    def _apply_perspective_auto(self, img: np.ndarray):
-        src = self._detect_document_corners(img)
-        dst = np.array([
-            [0, 0],
-            [self.output_width - 1, 0],
-            [self.output_width - 1, self.output_height - 1],
-            [0, self.output_height - 1]
-        ], dtype="float32")
-
-        M = cv2.getPerspectiveTransform(src, dst)
-        warped = cv2.warpPerspective(img, M, (self.output_width, self.output_height), flags=cv2.INTER_CUBIC)
-        return warped
-
     def run(self):
-        img = Image.get_frame(img=self.image, redis_db=self.redis_db)
-        if img is None or img.value is None:
+        img_obj = Image.get_frame(img=self.image, redis_db=self.redis_db)
+        if img_obj is None or img_obj.value is None:
             raise ValueError("No input image provided or failed to load.")
 
-        warped = self._apply_perspective_auto(img.value)
-        img.value = warped
-        self.image = Image.set_frame(img=img, package_uID=self.uID, redis_db=self.redis_db)
+        src_img = self._prepare_image(img_obj.value)
+        pts = auto_detect_document_corners_dynamic(src_img)
+        warped = _four_point_transform(src_img, pts)
+
+        img_obj.value = warped
+        self.image = Image.set_frame(img=img_obj, package_uID=self.uID, redis_db=self.redis_db)
+
+        self.context["src_quad"] = pts.tolist()
+        self.context["output_size"] = [warped.shape[1], warped.shape[0]]
 
         return build_response(context=self)
 
 
-if __name__ == "__main__":
-    Executor(sys.argv[1]).run()
+Executor(sys.argv[1]).run()
