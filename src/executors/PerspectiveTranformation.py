@@ -87,9 +87,20 @@ class PerspectiveTransformation(Component):
             return 1
         return width / height
 
+    def _line_intersection(self, line1, line2):
+        x1, y1, x2, y2 = line1
+        x3, y3, x4, y4 = line2
+        denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+        if denom == 0:
+            return None
+        px = ((x1*y2 - y1*x2) * (x3 - x4) - (x1 - x2) * (x3*y4 - y3*x4)) / denom
+        py = ((x1*y2 - y1*x2) * (y3 - y4) - (y1 - y2) * (x3*y4 - y3*x4)) / denom
+        return [px, py]
+
     def _detect_document_corners(self, img: np.ndarray) -> np.ndarray:
         img_prep = self._prepare_image(img)
         small, scale = self._resize_for_detection(img_prep)
+        img_area = img_prep.shape[0] * img_prep.shape[1]
 
         def preprocess_variant(gray_img, aggressive=False):
             gray = cv2.cvtColor(gray_img, cv2.COLOR_BGR2GRAY)
@@ -120,6 +131,7 @@ class PerspectiveTransformation(Component):
         best_score = 0
         last_contours = []
 
+        # 1) Kontur tabanlı tespit
         for edges in edge_maps:
             contours, _ = cv2.findContours(edges.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             last_contours = contours if contours else last_contours
@@ -132,7 +144,12 @@ class PerspectiveTransformation(Component):
                 if quad_small is not None:
                     quad = quad_small / scale
                     quad = self._order_points(quad.astype("float32"))
-                    area_score = cv2.contourArea(quad) / (img_prep.shape[0] * img_prep.shape[1])
+                    area_score = cv2.contourArea(quad) / img_area
+
+                    # Tam resmi alma engeli
+                    if area_score > 0.90:
+                        continue
+
                     desired_ar = self.output_width / self.output_height
                     quad_ar = self._aspect_ratio(quad)
                     ratio_score = 1 - min(abs(quad_ar - desired_ar), 1)
@@ -144,11 +161,46 @@ class PerspectiveTransformation(Component):
         if best_quad is not None:
             return best_quad
 
+        # 2) Çizgi tabanlı fallback
+        def hough_lines_corners(edges_img):
+            lines = cv2.HoughLinesP(edges_img, 1, np.pi / 180, threshold=80, minLineLength=50, maxLineGap=10)
+            if lines is None:
+                return None
+            lines = lines[:, 0, :]
+            intersections = []
+            for i in range(len(lines)):
+                for j in range(i + 1, len(lines)):
+                    ang1 = np.arctan2(lines[i][3] - lines[i][1], lines[i][2] - lines[i][0])
+                    ang2 = np.arctan2(lines[j][3] - lines[j][1], lines[j][2] - lines[j][0])
+                    if abs(abs(ang1 - ang2) - np.pi / 2) < np.deg2rad(15):
+                        pt = self._line_intersection(lines[i], lines[j])
+                        if pt is not None:
+                            intersections.append(pt)
+            if len(intersections) >= 4:
+                pts = np.array(intersections, dtype="float32")
+                rect = cv2.boundingRect(pts)
+                x, y, w, h = rect
+                return np.array([
+                    [x, y],
+                    [x + w, y],
+                    [x + w, y + h],
+                    [x, y + h]
+                ], dtype="float32")
+            return None
+
+        for edges in edge_maps:
+            quad_lines = hough_lines_corners(edges)
+            if quad_lines is not None:
+                quad = quad_lines / scale
+                return self._order_points(quad.astype("float32"))
+
+        # 3) minAreaRect fallback
         if last_contours:
             quad_small = self._quad_from_min_area_rect(last_contours[0])
             quad = quad_small / scale
             return self._order_points(quad.astype("float32"))
 
+        # 4) Tam resim fallback
         h, w = img_prep.shape[:2]
         return np.array([
             [0, 0],
