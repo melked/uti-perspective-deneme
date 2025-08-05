@@ -283,19 +283,51 @@ def _auto_detect_document_corners_color_segmentation(image: np.ndarray) -> np.nd
 
     return _find_quad_from_contours(morph, image)
 
+def _line_intersection(line1, line2):
+    x1, y1, x2, y2 = line1
+    x3, y3, x4, y4 = line2
+
+    denom = (x1 - x2)*(y3 - y4) - (y1 - y2)*(x3 - x4)
+    if denom == 0:
+        return None
+
+    px = ((x1*y2 - y1*x2)*(x3 - x4) - (x1 - x2)*(x3*y4 - y3*x4)) / denom
+    py = ((x1*y2 - y1*x2)*(y3 - y4) - (y1 - y2)*(x3*y4 - y3*x4)) / denom
+
+    return [px, py]
+
+
+def _get_intersections(lines, img_shape):
+    intersections = []
+    for i in range(len(lines)):
+        for j in range(i+1, len(lines)):
+            pt = _line_intersection(lines[i][0], lines[j][0])
+            if pt is None:
+                continue
+            x, y = pt
+            if 0 <= x < img_shape[1] and 0 <= y < img_shape[0]:
+                intersections.append([x, y])
+    return np.array(intersections)
+
+
+def _select_corners(points):
+    if len(points) < 4:
+        return None
+    hull = cv2.convexHull(points.astype(np.float32))
+    pts = hull.reshape(-1, 2)
+    if len(pts) < 4:
+        return None
+    # Sadece 4 nokta seç (en dıştaki 4)
+    if len(pts) > 4:
+        pts = pts[:4]
+    rect = _order_points(pts)
+    return rect
 
 def auto_detect_document_corners_dynamic(image: np.ndarray) -> np.ndarray:
     corrected = _auto_gamma_correction(image)
 
-    # Arka plan dokusunu azalt
     texture_mask = _texture_mask_gabor(corrected)
     reduced_texture_img = _reduce_background_texture(corrected, texture_mask)
-
-    gray = cv2.cvtColor(reduced_texture_img, cv2.COLOR_BGR2GRAY)
-    contrast = gray.max() - gray.min()
-    brightness = np.mean(gray)
-
-    pts = None
 
     mask = _mask_background_lab_range(reduced_texture_img)
     pts = _find_quad_from_contours(mask, reduced_texture_img)
@@ -309,6 +341,22 @@ def auto_detect_document_corners_dynamic(image: np.ndarray) -> np.ndarray:
     pts = _auto_detect_document_corners_lab_adaptive(reduced_texture_img)
     if not np.allclose(pts, _full_image_quad(reduced_texture_img), atol=1):
         return pts
+
+    # --- BURASI EKLENDİ: Hough çizgileri ile 90° kesişim noktalarından köşe seç ---
+    gray = cv2.cvtColor(reduced_texture_img, cv2.COLOR_BGR2GRAY)
+    edges = adaptive_canny(gray)
+    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=80, minLineLength=50, maxLineGap=10)
+    filtered_lines = _filter_lines_by_angle(lines, angle_tol=15)
+    if filtered_lines is not None and len(filtered_lines) >= 2:
+        intersections = _get_intersections(filtered_lines, reduced_texture_img.shape)
+        corners = _select_corners(intersections)
+        if corners is not None:
+            return corners
+    # ---
+
+    gray = cv2.cvtColor(reduced_texture_img, cv2.COLOR_BGR2GRAY)
+    contrast = gray.max() - gray.min()
+    brightness = np.mean(gray)
 
     if contrast < 40:
         return _auto_detect_document_corners_sharpen_adaptive(reduced_texture_img)
