@@ -12,10 +12,9 @@ from sdks.novavision.src.helper.executor import Executor
 from components.PerspectiveTransformation.src.utils.response import build_response
 from components.PerspectiveTransformation.src.models.PackageModel import PackageModel
 
-
-# ----------------------------------------
+# ====================
 # Yardımcı Fonksiyonlar
-# ----------------------------------------
+# ====================
 
 def _order_points(pts: np.ndarray) -> np.ndarray:
     pts = pts.reshape(4, 2)
@@ -27,7 +26,6 @@ def _order_points(pts: np.ndarray) -> np.ndarray:
     rect[1] = pts[np.argmin(diff)]    # top-right
     rect[3] = pts[np.argmax(diff)]    # bottom-left
     return rect
-
 
 def _four_point_transform(image: np.ndarray, pts: np.ndarray) -> np.ndarray:
     rect = _order_points(pts)
@@ -52,22 +50,18 @@ def _four_point_transform(image: np.ndarray, pts: np.ndarray) -> np.ndarray:
     warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight), flags=cv2.INTER_LANCZOS4)
     return warped
 
-
 def _full_image_quad(image: np.ndarray) -> np.ndarray:
     h, w = image.shape[:2]
-    return np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], dtype=np.float32)
+    return np.array([[0,0], [w-1,0], [w-1,h-1], [0,h-1]], dtype=np.float32)
 
-
-def _unsharp_mask(image: np.ndarray, ksize=(5, 5), strength=1.5) -> np.ndarray:
+def _unsharp_mask(image: np.ndarray, ksize=(5,5), strength=1.5) -> np.ndarray:
     blur = cv2.GaussianBlur(image, ksize, 0)
     return cv2.addWeighted(image, 1 + strength, blur, -strength, 0)
-
 
 def _gamma_correction(image: np.ndarray, gamma=1.5) -> np.ndarray:
     invGamma = 1.0 / gamma
     table = np.array([(i / 255.0) ** invGamma * 255 for i in range(256)]).astype("uint8")
     return cv2.LUT(image, table)
-
 
 def _auto_gamma_correction(image: np.ndarray) -> np.ndarray:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -80,7 +74,9 @@ def _auto_gamma_correction(image: np.ndarray) -> np.ndarray:
         gamma = 1.0
     return _gamma_correction(image, gamma)
 
-
+# --------------------
+# Kontur Tabanlı Köşe Tespiti
+# --------------------
 def _find_quad_from_contours(binary_img: np.ndarray, ref_image: np.ndarray, min_area_ratio=0.03) -> Optional[np.ndarray]:
     contours, _ = cv2.findContours(binary_img, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
@@ -97,71 +93,12 @@ def _find_quad_from_contours(binary_img: np.ndarray, ref_image: np.ndarray, min_
         peri = cv2.arcLength(c, True)
         approx = cv2.approxPolyDP(c, 0.02 * peri, True)
         if len(approx) == 4 and cv2.isContourConvex(approx):
-            return approx.reshape(4, 2).astype(np.float32)
+            return approx.reshape(4,2).astype(np.float32)
     return None
 
-
-def _line_intersection(line1, line2):
-    x1, y1, x2, y2 = line1
-    x3, y3, x4, y4 = line2
-    denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
-    if denom == 0:
-        return None
-    px = ((x1 * y2 - y1 * x2) * (x3 - x4) - (x1 - x2) * (x3 * y4 - y3 * x4)) / denom
-    py = ((x1 * y2 - y1 * x2) * (y3 - y4) - (y1 - y2) * (x3 * y4 - y3 * x4)) / denom
-    return [px, py]
-
-
-def _point_in_bounds(pt, shape):
-    x, y = pt
-    h, w = shape[:2]
-    return 0 <= x < w and 0 <= y < h
-
-
-def _cluster_points(points, max_clusters=4, tolerance=50):
-    # sklearn yok, basit kümeleme:
-    # Noktaları birbirine yakın gruplar halinde topla
-    clusters = []
-    for pt in points:
-        found_cluster = False
-        for c in clusters:
-            if np.linalg.norm(np.array(pt) - np.array(c[0])) < tolerance:
-                c.append(pt)
-                found_cluster = True
-                break
-        if not found_cluster:
-            clusters.append([pt])
-
-    # Her kümeden ortalama al
-    centers = []
-    for c in clusters:
-        center = np.mean(c, axis=0)
-        centers.append(center)
-
-    # 4 küme yoksa, eksik küme varsa en yakın noktaları birleştir
-    while len(centers) > max_clusters:
-        # En yakın iki merkezi bul, birleştir
-        min_dist = np.inf
-        idx1, idx2 = 0, 1
-        for i in range(len(centers)):
-            for j in range(i + 1, len(centers)):
-                dist = np.linalg.norm(centers[i] - centers[j])
-                if dist < min_dist:
-                    min_dist = dist
-                    idx1, idx2 = i, j
-        # İki kümeyi birleştir
-        new_center = (centers[idx1] + centers[idx2]) / 2
-        centers.pop(max(idx1, idx2))
-        centers.pop(min(idx1, idx2))
-        centers.append(new_center)
-
-    # Eğer 4'ten azsa, yine en yakın merkezleri çoğalt (burası nadir ama)
-    while len(centers) < max_clusters:
-        centers.append(centers[-1])  # son merkezi çoğalt
-
-    return np.array(centers)
-
-
+# --------------------
+# Hough Çizgi Bazlı Köşe Tespiti
+# --------------------
 def _auto_detect_corners_hough(image: np.ndarray) -> Optional[np.ndarray]:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     edges = cv2.Canny(gray, 50, 150, apertureSize=3)
@@ -170,45 +107,80 @@ def _auto_detect_corners_hough(image: np.ndarray) -> Optional[np.ndarray]:
         return None
 
     points = []
+    # Çizgi çiftlerinin kesişim noktalarını bul
     for i in range(len(lines)):
-        for j in range(i + 1, len(lines)):
+        for j in range(i+1, len(lines)):
             line1 = lines[i][0]
             line2 = lines[j][0]
             pt = _line_intersection(line1, line2)
             if pt is not None and _point_in_bounds(pt, image.shape):
                 points.append(pt)
 
+    # Kesişim noktalarını grupla ve en iyi 4 tanesini seç
     if len(points) < 4:
         return None
-
     clustered = _cluster_points(points, max_clusters=4)
     if clustered.shape[0] != 4:
         return None
-
     return clustered.astype(np.float32)
 
+def _line_intersection(line1, line2):
+    # line = [x1,y1,x2,y2]
+    x1,y1,x2,y2 = line1
+    x3,y3,x4,y4 = line2
+    denom = (x1 - x2)*(y3 - y4) - (y1 - y2)*(x3 - x4)
+    if denom == 0:
+        return None
+    px = ((x1*y2 - y1*x2)*(x3 - x4) - (x1 - x2)*(x3*y4 - y3*x4)) / denom
+    py = ((x1*y2 - y1*x2)*(y3 - y4) - (y1 - y2)*(x3*y4 - y3*x4)) / denom
+    return [px, py]
+
+def _point_in_bounds(pt, shape):
+    x, y = pt
+    h, w = shape[:2]
+    return 0 <= x < w and 0 <= y < h
+
+def _cluster_points(points, max_clusters=4):
+    # K-means benzeri basit kümeleme yaparak 4 grup oluşturur
+    # Noktalar 2D numpy array olarak
+    pts = np.array(points)
+    from sklearn.cluster import KMeans
+    kmeans = KMeans(n_clusters=max_clusters, random_state=0).fit(pts)
+    centers = kmeans.cluster_centers_
+    return centers
+
+# --------------------
+# Çoklu Varyasyonlar (Soft & Agresif)
+# --------------------
 
 def _prepare_variations(image: np.ndarray):
+    """Farklı ön işleme varyasyonları üretir"""
     variations = []
 
+    # 1. Orijinal gamma auto düzeltmeli
     gamma_auto = _auto_gamma_correction(image)
     variations.append(("gamma_auto", gamma_auto))
 
+    # 2. CLAHE + gamma_auto
     gray = cv2.cvtColor(gamma_auto, cv2.COLOR_BGR2GRAY)
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
     clahe_img = clahe.apply(gray)
     clahe_bgr = cv2.cvtColor(clahe_img, cv2.COLOR_GRAY2BGR)
     variations.append(("clahe_gamma_auto", clahe_bgr))
 
+    # 3. CLAHE + keskinleştirme + gamma_auto
     sharpened = _unsharp_mask(clahe_bgr, strength=1.5)
     variations.append(("clahe_sharp_gamma_auto", sharpened))
 
+    # 4. Keskinleştirme + gamma_auto
     sharp = _unsharp_mask(gamma_auto, strength=1.5)
     variations.append(("sharp_gamma_auto", sharp))
 
+    # 5. Sadece keskinleştirme
     sharp_only = _unsharp_mask(image, strength=1.5)
     variations.append(("sharp_only", sharp_only))
 
+    # 6. Yüksek kontrastlı adaptif eşik + keskinleştirme (daha agresif)
     gray_orig = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     blur = cv2.bilateralFilter(gray_orig, 9, 75, 75)
     sharpened_blur = _unsharp_mask(blur, strength=2.0)
@@ -218,51 +190,48 @@ def _prepare_variations(image: np.ndarray):
     thresh_bgr = cv2.cvtColor(thresh, cv2.COLOR_GRAY2BGR)
     variations.append(("aggressive_thresh", thresh_bgr))
 
+    # 7. Parlaklık azaltılmış gamma düzeltmeli
     gamma_low = _gamma_correction(image, gamma=0.6)
     variations.append(("gamma_low", gamma_low))
 
+    # 8. Parlaklık artırılmış gamma düzeltmeli
     gamma_high = _gamma_correction(image, gamma=1.8)
     variations.append(("gamma_high", gamma_high))
 
-    bilateral = cv2.bilateralFilter(gray, 9, 75, 75)
-    bilateral_bgr = cv2.cvtColor(bilateral, cv2.COLOR_GRAY2BGR)
-    bilateral_sharp = _unsharp_mask(bilateral_bgr, strength=1.8)
-    variations.append(("clahe_bilateral_sharp", bilateral_sharp))
-
-    gamma_12 = _gamma_correction(image, gamma=1.2)
-    gamma_12_sharp = _unsharp_mask(gamma_12, strength=1.3)
-    variations.append(("gamma_12_sharp", gamma_12_sharp))
-
     return variations
 
-
+# --------------------
+# Kontur ve Hough sonuçlarını karşılaştır ve skorla
+# --------------------
 def _score_quad(quad: np.ndarray, image_shape) -> float:
+    # Dikdörtgensellik (köşeler arası açıya bak)
     def angle(pt1, pt2, pt3):
         a = np.array(pt1) - np.array(pt2)
         b = np.array(pt3) - np.array(pt2)
-        cos_angle = np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-10)
+        cos_angle = np.dot(a,b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-10)
         return np.arccos(np.clip(cos_angle, -1.0, 1.0)) * 180 / np.pi
 
     angles = []
     quad = _order_points(quad)
     for i in range(4):
-        angles.append(angle(quad[i], quad[(i + 1) % 4], quad[(i + 2) % 4]))
+        angles.append(angle(quad[i], quad[(i+1)%4], quad[(i+2)%4]))
 
-    rectness_score = np.mean([abs(90 - a) for a in angles])
+    rectness_score = np.mean([abs(90 - a) for a in angles])  # 0’a yakın olması iyi
 
-    img_area = image_shape[0] * image_shape[1]
-    quad_area = cv2.contourArea(quad.reshape(4, 1, 2))
+    # Alan oranı (çok küçük alanlar kötü)
+    img_area = image_shape[0]*image_shape[1]
+    quad_area = cv2.contourArea(quad.reshape(4,1,2))
     area_ratio = quad_area / img_area
 
-    if area_ratio < 0.02:
-        return -np.inf
-
+    # Skor: alan + dikdörtgensellik (küçük skor kötü)
+    # normalize etmek için çeviriyoruz
     score = (area_ratio * 1000) - rectness_score * 2
 
     return score
 
-
 def _combine_quads(quad1: Optional[np.ndarray], quad2: Optional[np.ndarray], image_shape):
+    # İki quad benzer ise ortalamasını al
+    # Farklıysa skor bazlı en iyisini döndür
     if quad1 is None and quad2 is None:
         return None
     if quad1 is None:
@@ -278,23 +247,32 @@ def _combine_quads(quad1: Optional[np.ndarray], quad2: Optional[np.ndarray], ima
         score2 = _score_quad(quad2, image_shape)
         return quad1 if score1 > score2 else quad2
 
-
+# --------------------
+# Ana Fonksiyon: Tüm varyasyonları test et
+# --------------------
 def _detect_best_quad(image: np.ndarray) -> np.ndarray:
     variations = _prepare_variations(image)
     best_quad = None
     best_score = -np.inf
 
     for name, var_img in variations:
+        # Ön işlemli varyasyonlar üzerinde önce kontur tespiti
         gray = cv2.cvtColor(var_img, cv2.COLOR_BGR2GRAY)
         if "aggressive_thresh" in name:
+            # Threshold hali zaten binary, direkt kullan
             binary = gray
         else:
+            # Adaptif threshold (soft versiyon)
             binary = cv2.adaptiveThreshold(
                 gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                 cv2.THRESH_BINARY_INV, 11, 2)
 
         quad_contour = _find_quad_from_contours(binary, image)
+
+        # Hough ile de dene
         quad_hough = _auto_detect_corners_hough(var_img)
+
+        # İki quadı birleştir/skorla en iyisini seç
         quad = _combine_quads(quad_contour, quad_hough, image.shape)
 
         if quad is not None:
@@ -304,14 +282,13 @@ def _detect_best_quad(image: np.ndarray) -> np.ndarray:
                 best_quad = quad
 
     if best_quad is None:
+        # Hiç bulunamadıysa full image döndür
         return _full_image_quad(image)
     return _order_points(best_quad)
 
-
-# ----------------------------------------
+# ====================
 # Ana Component Class
-# ----------------------------------------
-
+# ====================
 class PerspectiveTransformation(Component):
     def __init__(self, request, bootstrap):
         super().__init__(request, bootstrap)
@@ -351,6 +328,4 @@ class PerspectiveTransformation(Component):
 
         return build_response(context=self)
 
-
-if __name__ == "__main__":
-    Executor(sys.argv[1]).run()
+Executor(sys.argv[1]).run()
