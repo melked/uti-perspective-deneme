@@ -30,22 +30,18 @@ def _order_points(pts: np.ndarray) -> np.ndarray:
 def _four_point_transform(image: np.ndarray, pts: np.ndarray) -> np.ndarray:
     rect = _order_points(pts)
     (tl, tr, br, bl) = rect
-
     widthA = np.linalg.norm(br - bl)
     widthB = np.linalg.norm(tr - tl)
     maxWidth = int(round(max(widthA, widthB)))
-
     heightA = np.linalg.norm(tr - br)
     heightB = np.linalg.norm(tl - bl)
     maxHeight = int(round(max(heightA, heightB)))
-
     dst = np.array([
         [0, 0],
         [maxWidth - 1, 0],
         [maxWidth - 1, maxHeight - 1],
         [0, maxHeight - 1]
     ], dtype=np.float32)
-
     M = cv2.getPerspectiveTransform(rect, dst)
     warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight), flags=cv2.INTER_LANCZOS4)
     return warped
@@ -61,7 +57,7 @@ def _find_quad_from_contours(binary_img: np.ndarray, ref_image: np.ndarray) -> n
     contours = sorted(contours, key=cv2.contourArea, reverse=True)
     img_area = ref_image.shape[0] * ref_image.shape[1]
     min_area = img_area * 0.01
-    for c in contours:
+    for c in contours[:3]:  # ilk 3 kontur denensin
         if cv2.contourArea(c) < min_area:
             continue
         peri = cv2.arcLength(c, True)
@@ -75,55 +71,49 @@ def _unsharp_mask(image, ksize=(5, 5), strength=1.5):
     return cv2.addWeighted(image, 1 + strength, blur, -strength, 0)
 
 # -------------------
-# Kenar Tespit Yöntemleri
+# Edge Detection Yöntemleri
 # -------------------
-def _auto_detect_document_corners_sharpen_adaptive(image: np.ndarray) -> np.ndarray:
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    blur = cv2.bilateralFilter(gray, 9, 75, 75)
-    sharpen_kernel = np.array([[0, -1, 0],
-                               [-1, 5, -1],
-                               [0, -1, 0]])
-    sharpened = cv2.filter2D(blur, -1, sharpen_kernel)
-    thresh = cv2.adaptiveThreshold(
-        sharpened, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY_INV, 11, 2
-    )
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-    morph = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
-    morph = cv2.morphologyEx(morph, cv2.MORPH_OPEN, kernel)
-    return _find_quad_from_contours(morph, image)
-
-def _auto_detect_document_corners_clahe_canny(image: np.ndarray) -> np.ndarray:
+def _clahe_canny(image: np.ndarray) -> np.ndarray:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     clahe_img = clahe.apply(gray)
     edges = cv2.Canny(clahe_img, 30, 150)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
     morph = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
-    return _find_quad_from_contours(morph, image)
+    return morph
 
-def _auto_detect_document_corners_hough(image: np.ndarray) -> np.ndarray:
+def _sobel_laplacian(image: np.ndarray) -> np.ndarray:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, 50, 150, apertureSize=3)
-    lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=80, minLineLength=50, maxLineGap=10)
-    if lines is None or len(lines) < 4:
-        return _full_image_quad(image)
-    all_points = np.vstack([lines[:, 0, :2], lines[:, 0, 2:]])
-    x_min, y_min = np.min(all_points, axis=0)
-    x_max, y_max = np.max(all_points, axis=0)
-    return np.array([[x_min, y_min], [x_max, y_min], [x_max, y_max], [x_min, y_max]], dtype=np.float32)
+    sobelx = cv2.Sobel(gray, cv2.CV_8U, 1, 0, ksize=3)
+    sobely = cv2.Sobel(gray, cv2.CV_8U, 0, 1, ksize=3)
+    sobel = cv2.bitwise_or(sobelx, sobely)
+    laplacian = cv2.Laplacian(gray, cv2.CV_8U)
+    combined = cv2.bitwise_or(sobel, laplacian)
+    _, thresh = cv2.threshold(combined, 30, 255, cv2.THRESH_BINARY)
+    return thresh
 
 # -------------------
-# Arka Plan Maskeleme (desenli zeminler)
+# Shadow Removal
 # -------------------
-def _mask_background_complex(image: np.ndarray) -> np.ndarray:
+def _remove_shadows(image: np.ndarray) -> np.ndarray:
+    rgb_planes = cv2.split(image)
+    result_planes = []
+    for plane in rgb_planes:
+        dilated_img = cv2.dilate(plane, np.ones((7, 7), np.uint8))
+        bg_img = cv2.medianBlur(dilated_img, 21)
+        diff_img = 255 - cv2.absdiff(plane, bg_img)
+        result_planes.append(diff_img)
+    return cv2.merge(result_planes)
+
+# -------------------
+# Background Masking
+# -------------------
+def _mask_background_lab(image: np.ndarray) -> np.ndarray:
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
     L, A, B = cv2.split(lab)
     L_blur = cv2.GaussianBlur(L, (5, 5), 0)
-    light_mask = cv2.adaptiveThreshold(
-        L_blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY, 15, 5
-    )
+    light_mask = cv2.adaptiveThreshold(L_blur, 255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 5)
     edges = cv2.Canny(L_blur, 50, 150)
     combined = cv2.bitwise_or(light_mask, edges)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
@@ -131,30 +121,45 @@ def _mask_background_complex(image: np.ndarray) -> np.ndarray:
     return combined
 
 # -------------------
-# Dinamik seçim ve fallback sistemi
+# Dynamic Selection
 # -------------------
 def auto_detect_document_corners_dynamic(image: np.ndarray) -> np.ndarray:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     contrast = gray.max() - gray.min()
     brightness = np.mean(gray)
 
-    if contrast < 40:  # bulanık/loş belge
-        sharpened = _unsharp_mask(gray)
-        return _auto_detect_document_corners_sharpen_adaptive(cv2.cvtColor(sharpened, cv2.COLOR_GRAY2BGR))
-    elif brightness > 180:  # açık arka plan
-        darkened = cv2.convertScaleAbs(gray, alpha=0.9, beta=-30)
-        return _auto_detect_document_corners_clahe_canny(cv2.cvtColor(darkened, cv2.COLOR_GRAY2BGR))
-    else:
-        pts = _auto_detect_document_corners_clahe_canny(image)
-        if np.allclose(pts, _full_image_quad(image), atol=1):
-            pts = _auto_detect_document_corners_hough(image)
-            if np.allclose(pts, _full_image_quad(image), atol=1):
-                mask = _mask_background_complex(image)
-                return _find_quad_from_contours(mask, image)
-        return pts
+    # Multi-pass edge detection
+    edges1 = _clahe_canny(image)
+    edges2 = _sobel_laplacian(image)
+    combined_edges = cv2.bitwise_or(edges1, edges2)
+
+    # Shadow removal
+    if brightness < 100:
+        print("[INFO] Shadow removal applied")
+        image = _remove_shadows(image)
+
+    # Background masking
+    if contrast < 40 or brightness > 180:
+        print("[INFO] LAB background mask applied")
+        mask = _mask_background_lab(image)
+        combined_edges = cv2.bitwise_or(combined_edges, mask)
+
+    # Conturdan köşe bulma
+    pts = _find_quad_from_contours(combined_edges, image)
+
+    if np.allclose(pts, _full_image_quad(image), atol=2):
+        print("[WARN] Fallback: CLAHE only")
+        pts = _find_quad_from_contours(edges1, image)
+
+    if np.allclose(pts, _full_image_quad(image), atol=2):
+        print("[WARN] Fallback: Background mask only")
+        mask = _mask_background_lab(image)
+        pts = _find_quad_from_contours(mask, image)
+
+    return pts
 
 # -------------------
-# Ana Component
+# Component
 # -------------------
 class PerspectiveTransformation(Component):
     def __init__(self, request, bootstrap):
