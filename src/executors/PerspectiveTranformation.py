@@ -12,8 +12,40 @@ from sdks.novavision.src.helper.executor import Executor
 from components.PerspectiveTransformation.src.utils.response import build_response
 from components.PerspectiveTransformation.src.models.PackageModel import PackageModel
 
+def _detect_foreground_object_mask(image: np.ndarray) -> np.ndarray:
+    """Karmaşık arka planda önde olan nesneyi ayıran maske."""
+    blur = cv2.GaussianBlur(image, (5, 5), 0)
 
-# ========== Yardımcı Fonksiyonlar ==========
+    # HSV doygunluk maskesi
+    hsv = cv2.cvtColor(blur, cv2.COLOR_BGR2HSV)
+    s_channel = hsv[:, :, 1]
+    _, sat_mask = cv2.threshold(s_channel, 40, 255, cv2.THRESH_BINARY)
+
+    # Kenar tespiti
+    gray = cv2.cvtColor(blur, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 60, 150)
+
+    combined_mask = cv2.bitwise_or(sat_mask, edges)
+
+    # Morfolojik kapatma
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+    # GrabCut ile iyileştirme
+    mask_gc = np.zeros(image.shape[:2], np.uint8)
+    mask_gc[combined_mask > 0] = cv2.GC_PR_FGD
+    bgdModel = np.zeros((1, 65), np.float64)
+    fgdModel = np.zeros((1, 65), np.float64)
+    cv2.grabCut(image, mask_gc, None, bgdModel, fgdModel, 5, cv2.GC_INIT_WITH_MASK)
+
+    final_mask = np.where((mask_gc == 1) | (mask_gc == 3), 255, 0).astype('uint8')
+    return final_mask
+
+
+def _auto_detect_document_corners_foreground_priority(image: np.ndarray) -> np.ndarray:
+    mask = _detect_foreground_object_mask(image)
+    return _find_quad_from_contours(mask, image)
+
 
 def _order_points(pts: np.ndarray) -> np.ndarray:
     pts = pts.reshape(4, 2)
@@ -281,25 +313,28 @@ def auto_detect_document_corners_dynamic(image: np.ndarray) -> np.ndarray:
     contrast = gray.max() - gray.min()
     brightness = np.mean(gray)
 
-    pts = None
+    # 0) Önce foreground-priority yöntemi dene
+    pts = _auto_detect_document_corners_foreground_priority(corrected)
+    if not np.allclose(pts, _full_image_quad(corrected), atol=1):
+        return pts
 
-    # Try LAB space masking first for robust background removal
+    # 1) LAB space masking
     mask = _mask_background_lab_range(corrected)
     pts = _find_quad_from_contours(mask, corrected)
     if not np.allclose(pts, _full_image_quad(corrected), atol=1):
         return pts
 
-    # Try color segmentation
+    # 2) Color segmentation
     pts = _auto_detect_document_corners_color_segmentation(corrected)
     if not np.allclose(pts, _full_image_quad(corrected), atol=1):
          return pts
 
-    # Try LAB adaptive approach
+    # 3) LAB adaptive
     pts = _auto_detect_document_corners_lab_adaptive(corrected)
     if not np.allclose(pts, _full_image_quad(corrected), atol=1):
         return pts
 
-    # Fallback to previous methods based on contrast/brightness if others fail
+    # 4) Diğer fallback yöntemler (senin kodunda olduğu gibi)
     if contrast < 40:
         return _auto_detect_document_corners_sharpen_adaptive(corrected)
     elif brightness > 200:
@@ -324,7 +359,6 @@ def auto_detect_document_corners_dynamic(image: np.ndarray) -> np.ndarray:
             if np.allclose(pts, _full_image_quad(corrected), atol=1):
                  pts = _auto_detect_document_corners_hough_improved(corrected)
                  if np.allclose(pts, _full_image_quad(corrected), atol=1):
-                     # Final fallback, consider increasing min_area_ratio for noisy images
                      pts = _find_quad_from_contours(_mask_background_lab_range(corrected), corrected, min_area_ratio=0.1)
         return pts
 
