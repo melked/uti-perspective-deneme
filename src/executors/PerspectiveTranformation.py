@@ -541,7 +541,6 @@ class PerspectiveTransformation(Component):
         unsharp_mask = cv2.addWeighted(img_blurred, 1.5, gaussian, -0.5, 0)
         return unsharp_mask
 
-
     def sharpen_image(self, img):
         """Bulanıklık için keskinleştirme filtresi"""
         if img is None or img.size == 0: return None
@@ -611,7 +610,6 @@ class PerspectiveTransformation(Component):
                      _, edges = cv2.threshold(edges, params.get('sobel_threshold_min', 5), params.get('sobel_threshold_max', 255), cv2.THRESH_BINARY)
                 else: # Simple thresholding
                      _, edges = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
 
             if edges is not None and np.sum(edges) > 0:
                 lines = cv2.HoughLines(edges, params.get('rho', 1), params.get('theta', np.pi/180), params.get('threshold_intersect', 250))
@@ -732,11 +730,8 @@ class PerspectiveTransformation(Component):
         return corrected, output_size
 
 
-    def _find_and_transform_document(self, img, params):
-        """
-        Applies preprocessing, attempts to find corners with a specific detection method,
-        and applies perspective transform if corners are found.
-        """
+    def _process_image_with_params(self, img, params):
+        """Applies preprocessing and attempts to find corners with given parameters."""
         preprocessed_img = self.preprocess_image(
             img,
             method=params.get('preprocess_method', 'default'),
@@ -745,15 +740,47 @@ class PerspectiveTransformation(Component):
             remove_shadows_flag=params.get('remove_shadows_flag', False)
         )
         if preprocessed_img is None:
-            raise RuntimeError("Preprocessing failed.")
+            # Log a warning or handle the preprocessing failure more gracefully
+            print("Warning: Preprocessing failed for a parameter set.")
+            return None
 
         corners = self._find_document_corners(preprocessed_img, params.get('detection_method'), params)
 
-        if corners is not None:
-            warped_img, output_size = self._apply_perspective_transform(img, corners) # Apply transform to original image
-            return warped_img, corners, output_size
+        # Add a check for the quality of detected corners
+        if corners is not None and len(corners) == 4:
+            reordered_corners = reorder_corners(corners)
+            if reordered_corners is not None:
+                area = cv2.contourArea(reordered_corners)
+                img_area = img.shape[0] * img.shape[1]
+                area_ratio = area / img_area if img_area > 0 else 0
+
+                side1 = np.linalg.norm(reordered_corners[0] - reordered_corners[1])
+                side2 = np.linalg.norm(reordered_corners[1] - reordered_corners[2])
+                aspect_ratio = max(side1, side2) / min(side1, side2) if min(side1, side2) > 0 else float('inf')
+
+                min_area_ratio = 0.01 # Minimum acceptable area ratio
+                max_aspect_ratio = 10.0 # Maximum acceptable aspect ratio
+
+                # Check convexity - this is already done in select_best_corners, but can be re-verified
+                v1 = reordered_corners[1] - reordered_corners[0]
+                v2 = reordered_corners[2] - reordered_corners[1]
+                v3 = reordered_corners[3] - reordered_corners[2]
+                v4 = reordered_corners[0] - reordered_corners[3]
+                cross_products = [np.cross(v1, v2), np.cross(v2, v3), np.cross(v3, v4), np.cross(v4, v1)]
+                signs = np.sign(cross_products)
+                is_convex = np.all(signs >= 0) or np.all(signs <= 0)
+
+
+                if is_convex and area_ratio > min_area_ratio and aspect_ratio < max_aspect_ratio:
+                    return reordered_corners # Return valid corners
+                else:
+                    # print("Detected corners did not pass quality checks (convexity, area, aspect ratio).")
+                    return None
+            else:
+                 # print("Reordering detected corners failed.")
+                 return None
         else:
-            return None, None, None # Return None if corners not found
+            return None # Return None if 4 corners not found initially
 
 
     def _apply_perspective_auto(self, src_img: np.ndarray):
@@ -761,29 +788,36 @@ class PerspectiveTransformation(Component):
         Görüntüye gelişmiş perspektif düzeltme uygular.
         Farklı parametre kombinasyonlarını dener ve başarılı olan ilkini döndürür.
         Orijinal ve negatif görüntü üzerinde denemeler yapar.
-        Refactored for cleaner parameter iteration and process flow.
+        Prioritizes parameter sets for faster detection.
         """
         if src_img is None or src_img.size == 0:
             raise ValueError("Input image is empty or None in _apply_perspective_auto.")
 
-        # Define parameter sets to try (simplified example sets for clarity)
+        # Define prioritized parameter sets to try
+        # Start with commonly effective combinations
         parameter_sets = [
-            # Basic attempts with different detection methods and default preprocessing
+            # Priority 1: Basic attempts with default preprocessing
             {'preprocess_method': 'default', 'detection_method': 'hough', 'edge_detector': 'canny'},
             {'preprocess_method': 'default', 'detection_method': 'contour', 'use_adaptive_thresholding': True},
-            {'preprocess_method': 'default', 'detection_method': 'shi_tomasi'},
-            {'preprocess_method': 'default', 'detection_method': 'harris'},
             {'preprocess_method': 'default', 'detection_method': 'hough_lines_p', 'edge_detector': 'canny'},
 
-            # Add some variations with aggressive preprocessing
+            # Priority 2: Basic attempts with aggressive preprocessing
             {'preprocess_method': 'aggressive', 'detection_method': 'hough', 'edge_detector': 'canny'},
             {'preprocess_method': 'aggressive', 'detection_method': 'contour', 'use_adaptive_thresholding': True},
+            {'preprocess_method': 'aggressive', 'detection_method': 'hough_lines_p', 'edge_detector': 'canny'},
 
-            # Add some variations with blur
-            {'preprocess_method': 'default', 'detection_method': 'hough', 'edge_detector': 'canny', 'blur_method': 'median', 'median_blur_size': 9},
+
+            # Priority 3: Add some common variations (blur, different edge detectors)
+            {'preprocess_method': 'default', 'detection_method': 'hough', 'edge_detector': 'sobel', 'blur_method': 'median', 'median_blur_size': 9},
             {'preprocess_method': 'default', 'detection_method': 'contour', 'use_adaptive_thresholding': False, 'blur_method': 'bilateral'},
+            {'preprocess_method': 'default', 'detection_method': 'shi_tomasi'},
+            {'preprocess_method': 'default', 'detection_method': 'harris'},
 
-            # Add more specific combinations as needed to cover likely scenarios
+
+            # Add more specific combinations here if needed, ordered by likelihood of success
+            {'preprocess_method': 'advanced', 'detection_method': 'hough', 'edge_detector': 'canny', 'blur_method': 'median', 'median_blur_size': 5},
+            {'preprocess_method': 'small', 'detection_method': 'contour', 'use_adaptive_thresholding': True, 'adaptive_block_size': 15},
+
         ]
 
         # Try with original image
@@ -791,12 +825,14 @@ class PerspectiveTransformation(Component):
         for i, params in enumerate(parameter_sets):
             print(f"  Attempt {i+1}/{len(parameter_sets)} (Original) with params: {params}")
             try:
-                warped_img, corners, output_size = self._find_and_transform_document(src_img, params)
-                if warped_img is not None:
-                    print("  ✅ Successful!")
-                    return warped_img, [], corners, output_size # Return empty corrected_boxes
+                corners = self._process_image_with_params(src_img, params)
+                if corners is not None:
+                    print("  ✅ Corners found!")
+                    warped, output_size = self._apply_perspective_transform(src_img, corners)
+                    print("  ✅ Perspective transform applied successfully!")
+                    return warped, [], corners, output_size # Return empty corrected_boxes
                 else:
-                    print("  ❌ Corners not found with these parameters.")
+                    print("  ❌ Corners not found or failed quality checks.")
             except Exception as e:
                 print(f"  ⛔ Attempt {i+1}/{len(parameter_sets)} (Original) failed: {e}")
                 # Log the error but continue trying other parameters
@@ -808,15 +844,14 @@ class PerspectiveTransformation(Component):
         for i, params in enumerate(parameter_sets):
              print(f"  Attempt {i+1}/{len(parameter_sets)} (Negative) with params: {params}")
              try:
-                warped_img, corners, output_size = self._find_and_transform_document(img_neg, params)
-                if warped_img is not None:
-                    print("  ✅ Successful!")
-                    # Note: We return the warped original image, not the warped negative image
-                    # The transform was calculated on the negative but applied to the original
-                    warped_original, output_size_original = self._apply_perspective_transform(src_img, corners)
-                    return warped_original, [], corners, output_size_original # Return empty corrected_boxes
+                corners = self._process_image_with_params(img_neg, params)
+                if corners is not None:
+                    print("  ✅ Corners found!")
+                    warped, output_size = self._apply_perspective_transform(src_img, corners) # Apply transform to original image with corners found on negative
+                    print("  ✅ Perspective transform applied successfully!")
+                    return warped, [], corners, output_size # Return empty corrected_boxes
                 else:
-                    print("  ❌ Corners not found with these parameters.")
+                    print("  ❌ Corners not found or failed quality checks.")
              except Exception as e:
                 print(f"  ⛔ Attempt {i+1}/{len(parameter_sets)} (Negative) failed: {e}")
                 # Log the error but continue trying other parameters
@@ -836,7 +871,6 @@ class PerspectiveTransformation(Component):
         src_img = self._prepare_image(img.value)
 
         # Apply perspective correction using the auto method
-        # _apply_perspective_auto handles parameter iteration and returns the first successful result
         warped, corrected_boxes, src_quad, (out_w, out_h) = self._apply_perspective_auto(src_img)
 
 
