@@ -14,8 +14,7 @@ from components.PerspectiveTransformation.src.models.PackageModel import Package
 
 class PerspectiveTransformation(Component):
     """
-    Auto perspective correction executor.
-    Detects a document-like quadrilateral and warps it to a target size.
+    Auto perspective correction executor with smart preprocessing selection.
     """
 
     def __init__(self, request, bootstrap):
@@ -41,7 +40,7 @@ class PerspectiveTransformation(Component):
         if img.shape[-1] == 4:
             img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
         return img
-
+    #bunu düşüncem kalmayabilir.
     def _resize_for_detection(self, img: np.ndarray, max_dim: int = 800):
         h, w = img.shape[:2]
         scale = 1.0
@@ -122,17 +121,18 @@ class PerspectiveTransformation(Component):
             edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=2)
             return edges
 
-        edge_maps = [
-            preprocess_variant(small, aggressive=False),
-            preprocess_variant(small, aggressive=True)
+        # Soft ve aggressive varyantları oluştur
+        variants = [
+            ("soft", preprocess_variant(small, aggressive=False)),
+            ("aggressive", preprocess_variant(small, aggressive=True))
         ]
 
         best_quad = None
         best_score = 0
         last_contours = []
 
-        # 1) Kontur tabanlı tespit
-        for edges in edge_maps:
+        # 1) İki varyantı da dene, en iyi skorlu olanı seç
+        for name, edges in variants:
             contours, _ = cv2.findContours(edges.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             last_contours = contours if contours else last_contours
             contours = sorted(contours, key=cv2.contourArea, reverse=True)
@@ -154,6 +154,7 @@ class PerspectiveTransformation(Component):
                     quad_ar = self._aspect_ratio(quad)
                     ratio_score = 1 - min(abs(quad_ar - desired_ar), 1)
                     score = area_score * 0.7 + ratio_score * 0.3
+
                     if score > best_score:
                         best_score = score
                         best_quad = quad
@@ -188,7 +189,7 @@ class PerspectiveTransformation(Component):
                 ], dtype="float32")
             return None
 
-        for edges in edge_maps:
+        for _, edges in variants:
             quad_lines = hough_lines_corners(edges)
             if quad_lines is not None:
                 quad = quad_lines / scale
