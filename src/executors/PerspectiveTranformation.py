@@ -259,9 +259,101 @@ def auto_detect_document_corners_dynamic(image: np.ndarray) -> np.ndarray:
         return pts
 
 
-# ====================
-# Ana Component
-# ====================
+import os
+import sys
+import cv2
+import numpy as np
+from typing import Optional
+
+sys.path.append(os.path.join(os.path.dirname(__file__), "../../../../"))
+
+from sdks.novavision.src.media.image import Image
+from sdks.novavision.src.base.component import Component
+from sdks.novavision.src.helper.executor import Executor
+from components.PerspectiveTransformation.src.utils.response import build_response
+from components.PerspectiveTransformation.src.models.PackageModel import PackageModel
+
+
+# (Buraya önceden var olan yardımcı fonksiyonların tamamını ekle; _order_points, _four_point_transform, vs.)
+
+# Yeni eklenen yardımcı fonksiyonlar:
+
+def _texture_mask_gabor(image: np.ndarray, ksize=31, sigma=4.0, theta=np.pi/4, lambd=10.0, gamma=0.5) -> np.ndarray:
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    g_kernel = cv2.getGaborKernel((ksize, ksize), sigma, theta, lambd, gamma, 0, ktype=cv2.CV_32F)
+    filtered = cv2.filter2D(gray, cv2.CV_8UC3, g_kernel)
+    _, mask = cv2.threshold(filtered, 50, 255, cv2.THRESH_BINARY)
+    return mask
+
+def _filter_lines_by_angle(lines, angle_tol=10):
+    if lines is None:
+        return None
+    filtered = []
+    for line in lines:
+        x1, y1, x2, y2 = line[0]
+        angle = np.degrees(np.arctan2(y2 - y1, x2 - x1)) % 180
+        if (abs(angle - 0) < angle_tol) or (abs(angle - 90) < angle_tol) or (abs(angle - 180) < angle_tol):
+            filtered.append(line)
+    return np.array(filtered) if filtered else None
+
+def _auto_detect_document_corners_hough_improved(image: np.ndarray) -> np.ndarray:
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 50, 150, apertureSize=3)
+    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=80, minLineLength=50, maxLineGap=10)
+
+    lines = _filter_lines_by_angle(lines, angle_tol=15)
+    if lines is None or len(lines) < 4:
+        return _full_image_quad(image)
+
+    all_points = np.vstack([lines[:, 0, :2], lines[:, 0, 2:]])
+    x_min, y_min = np.min(all_points, axis=0)
+    x_max, y_max = np.max(all_points, axis=0)
+    return np.array([[x_min, y_min], [x_max, y_min], [x_max, y_max], [x_min, y_max]], dtype=np.float32)
+
+
+def auto_detect_document_corners_dynamic(image: np.ndarray) -> np.ndarray:
+    corrected = _auto_gamma_correction(image)
+    gray = cv2.cvtColor(corrected, cv2.COLOR_BGR2GRAY)
+    contrast = gray.max() - gray.min()
+    brightness = np.mean(gray)
+
+    pts = None
+    mask = _mask_background_lab_range(corrected)
+    pts = _find_quad_from_contours(mask, corrected)
+    if not np.allclose(pts, _full_image_quad(corrected), atol=1):
+        return pts
+
+    texture_mask = _texture_mask_gabor(corrected)
+    pts = _find_quad_from_contours(texture_mask, corrected)
+    if not np.allclose(pts, _full_image_quad(corrected), atol=1):
+        return pts
+
+    if contrast < 40:
+        return _auto_detect_document_corners_sharpen_adaptive(corrected)
+    elif brightness > 200:
+        pts = _auto_detect_document_corners_bright_blur(corrected)
+        if not np.allclose(pts, _full_image_quad(corrected), atol=1):
+            return pts
+        pts = _auto_detect_document_corners_clahe_canny(corrected)
+        if not np.allclose(pts, _full_image_quad(corrected), atol=1):
+            return pts
+        mask = _mask_background_complex(corrected)
+        pts = _find_quad_from_contours(mask, corrected)
+        if not np.allclose(pts, _full_image_quad(corrected), atol=1):
+            return pts
+        return _auto_detect_document_corners_hough_improved(corrected)
+    elif brightness > 180:
+        return _auto_detect_document_corners_clahe_canny(corrected)
+    else:
+        pts = _auto_detect_document_corners_clahe_canny(corrected)
+        if np.allclose(pts, _full_image_quad(corrected), atol=1):
+            mask = _mask_background_complex(corrected)
+            pts = _find_quad_from_contours(mask, corrected)
+            if np.allclose(pts, _full_image_quad(corrected), atol=1):
+                return _auto_detect_document_corners_hough_improved(corrected)
+        return pts
+
+
 class PerspectiveTransformation(Component):
     def __init__(self, request, bootstrap):
         super().__init__(request, bootstrap)
@@ -300,6 +392,5 @@ class PerspectiveTransformation(Component):
         self.context["output_size"] = [warped.shape[1], warped.shape[0]]
 
         return build_response(context=self)
-
 
 Executor(sys.argv[1]).run()
