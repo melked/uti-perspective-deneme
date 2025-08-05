@@ -13,9 +13,8 @@ from components.PerspectiveTransformation.src.utils.response import build_respon
 from components.PerspectiveTransformation.src.models.PackageModel import PackageModel
 
 
-# ====================
-# Yardımcı Fonksiyonlar
-# ====================
+# ========== Yardımcı Fonksiyonlar ==========
+
 def _order_points(pts: np.ndarray) -> np.ndarray:
     pts = pts.reshape(4, 2)
     rect = np.zeros((4, 2), dtype=np.float32)
@@ -64,7 +63,7 @@ def _find_quad_from_contours(binary_img: np.ndarray, ref_image: np.ndarray) -> n
 
     contours = sorted(contours, key=cv2.contourArea, reverse=True)
     img_area = ref_image.shape[0] * ref_image.shape[1]
-    min_area = img_area * 0.05  # biraz daha yüksek eşik
+    min_area = img_area * 0.05
 
     for c in contours:
         area = cv2.contourArea(c)
@@ -84,8 +83,7 @@ def _unsharp_mask(image, ksize=(5, 5), strength=1.5):
 
 def _gamma_correction(image: np.ndarray, gamma=1.5) -> np.ndarray:
     invGamma = 1.0 / gamma
-    table = np.array([(i / 255.0) ** invGamma * 255
-                      for i in np.arange(256)]).astype("uint8")
+    table = np.array([(i / 255.0) ** invGamma * 255 for i in np.arange(256)]).astype("uint8")
     return cv2.LUT(image, table)
 
 
@@ -93,22 +91,18 @@ def _auto_gamma_correction(image: np.ndarray) -> np.ndarray:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     mean = np.mean(gray)
     if mean < 80:
-        gamma = 1.8  # koyu fotoğraflar için parlaklık artır
+        gamma = 1.8
     elif mean > 180:
-        gamma = 0.6  # parlak fotoğraflar için koyultma
+        gamma = 0.6
     else:
-        gamma = 1.0  # normal
+        gamma = 1.0
     return _gamma_correction(image, gamma)
 
 
-# ====================
-# Yeni LAB Range Maskeleme (Kırmızı arka plan + gri belge için)
-# ====================
 def _mask_background_lab_range(image: np.ndarray) -> np.ndarray:
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
     L, A, B = cv2.split(lab)
 
-    # A ve B kanallarında kırmızı arka plan aralıkları
     mask_a = cv2.inRange(A, 130, 170)
     mask_b = cv2.inRange(B, 120, 160)
 
@@ -123,7 +117,7 @@ def _mask_background_lab_range(image: np.ndarray) -> np.ndarray:
     edge_mask = cv2.Canny(L_blur, 40, 120)
 
     combined = cv2.bitwise_or(light_mask, edge_mask)
-    combined = cv2.bitwise_and(combined, cv2.bitwise_not(color_mask))  # Arka planı kaldır
+    combined = cv2.bitwise_and(combined, cv2.bitwise_not(color_mask))
 
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
     combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel, iterations=2)
@@ -132,9 +126,6 @@ def _mask_background_lab_range(image: np.ndarray) -> np.ndarray:
     return combined
 
 
-# ====================
-# Diğer Kenar Tespit Yöntemleri
-# ====================
 def _auto_detect_document_corners_sharpen_adaptive(image: np.ndarray) -> np.ndarray:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     blur = cv2.bilateralFilter(gray, 9, 75, 75)
@@ -163,14 +154,14 @@ def _auto_detect_document_corners_bright_blur(image: np.ndarray) -> np.ndarray:
     gamma_corrected = _gamma_correction(image, gamma=1.8)
 
     gray = cv2.cvtColor(gamma_corrected, cv2.COLOR_BGR2GRAY)
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     clahe_img = clahe.apply(gray)
 
-    sharp = _unsharp_mask(clahe_img, ksize=(5,5), strength=1.5)
+    sharp = _unsharp_mask(clahe_img, ksize=(5, 5), strength=1.5)
 
     edges = cv2.Canny(sharp, 30, 120)
 
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7,7))
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
     closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=2)
 
     pts = _find_quad_from_contours(closed, image)
@@ -204,87 +195,6 @@ def _mask_background_complex(image: np.ndarray) -> np.ndarray:
     return combined
 
 
-def _auto_detect_document_corners_hough(image: np.ndarray) -> np.ndarray:
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, 50, 150, apertureSize=3)
-    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=80, minLineLength=50, maxLineGap=10)
-    if lines is None or len(lines) < 4:
-        return _full_image_quad(image)
-
-    all_points = np.vstack([lines[:, 0, :2], lines[:, 0, 2:]])
-    x_min, y_min = np.min(all_points, axis=0)
-    x_max, y_max = np.max(all_points, axis=0)
-    return np.array([[x_min, y_min], [x_max, y_min], [x_max, y_max], [x_min, y_max]], dtype=np.float32)
-
-
-# ====================
-# Dinamik seçim (Güncellenmiş)
-# ====================
-def auto_detect_document_corners_dynamic(image: np.ndarray) -> np.ndarray:
-    corrected = _auto_gamma_correction(image)
-    gray = cv2.cvtColor(corrected, cv2.COLOR_BGR2GRAY)
-    contrast = gray.max() - gray.min()
-    brightness = np.mean(gray)
-
-    # Öncelikle kırmızı arka plan için LAB range maskeleme
-    pts = None
-    mask = _mask_background_lab_range(corrected)
-    pts = _find_quad_from_contours(mask, corrected)
-    if not np.allclose(pts, _full_image_quad(corrected), atol=1):
-        return pts
-
-    if contrast < 40:
-        return _auto_detect_document_corners_sharpen_adaptive(corrected)
-    elif brightness > 200:
-        pts = _auto_detect_document_corners_bright_blur(corrected)
-        if not np.allclose(pts, _full_image_quad(corrected), atol=1):
-            return pts
-        pts = _auto_detect_document_corners_clahe_canny(corrected)
-        if not np.allclose(pts, _full_image_quad(corrected), atol=1):
-            return pts
-        mask = _mask_background_complex(corrected)
-        pts = _find_quad_from_contours(mask, corrected)
-        if not np.allclose(pts, _full_image_quad(corrected), atol=1):
-            return pts
-        return _auto_detect_document_corners_hough(corrected)
-    elif brightness > 180:
-        return _auto_detect_document_corners_clahe_canny(corrected)
-    else:
-        pts = _auto_detect_document_corners_clahe_canny(corrected)
-        if np.allclose(pts, _full_image_quad(corrected), atol=1):
-            mask = _mask_background_complex(corrected)
-            pts = _find_quad_from_contours(mask, corrected)
-            if np.allclose(pts, _full_image_quad(corrected), atol=1):
-                return _auto_detect_document_corners_hough(corrected)
-        return pts
-
-
-import os
-import sys
-import cv2
-import numpy as np
-from typing import Optional
-
-sys.path.append(os.path.join(os.path.dirname(__file__), "../../../../"))
-
-from sdks.novavision.src.media.image import Image
-from sdks.novavision.src.base.component import Component
-from sdks.novavision.src.helper.executor import Executor
-from components.PerspectiveTransformation.src.utils.response import build_response
-from components.PerspectiveTransformation.src.models.PackageModel import PackageModel
-
-
-# (Buraya önceden var olan yardımcı fonksiyonların tamamını ekle; _order_points, _four_point_transform, vs.)
-
-# Yeni eklenen yardımcı fonksiyonlar:
-
-def _texture_mask_gabor(image: np.ndarray, ksize=31, sigma=4.0, theta=np.pi/4, lambd=10.0, gamma=0.5) -> np.ndarray:
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    g_kernel = cv2.getGaborKernel((ksize, ksize), sigma, theta, lambd, gamma, 0, ktype=cv2.CV_32F)
-    filtered = cv2.filter2D(gray, cv2.CV_8UC3, g_kernel)
-    _, mask = cv2.threshold(filtered, 50, 255, cv2.THRESH_BINARY)
-    return mask
-
 def _filter_lines_by_angle(lines, angle_tol=10):
     if lines is None:
         return None
@@ -295,6 +205,7 @@ def _filter_lines_by_angle(lines, angle_tol=10):
         if (abs(angle - 0) < angle_tol) or (abs(angle - 90) < angle_tol) or (abs(angle - 180) < angle_tol):
             filtered.append(line)
     return np.array(filtered) if filtered else None
+
 
 def _auto_detect_document_corners_hough_improved(image: np.ndarray) -> np.ndarray:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -309,6 +220,14 @@ def _auto_detect_document_corners_hough_improved(image: np.ndarray) -> np.ndarra
     x_min, y_min = np.min(all_points, axis=0)
     x_max, y_max = np.max(all_points, axis=0)
     return np.array([[x_min, y_min], [x_max, y_min], [x_max, y_max], [x_min, y_max]], dtype=np.float32)
+
+
+def _texture_mask_gabor(image: np.ndarray, ksize=31, sigma=4.0, theta=np.pi/4, lambd=10.0, gamma=0.5) -> np.ndarray:
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    g_kernel = cv2.getGaborKernel((ksize, ksize), sigma, theta, lambd, gamma, 0, ktype=cv2.CV_32F)
+    filtered = cv2.filter2D(gray, cv2.CV_8UC3, g_kernel)
+    _, mask = cv2.threshold(filtered, 50, 255, cv2.THRESH_BINARY)
+    return mask
 
 
 def auto_detect_document_corners_dynamic(image: np.ndarray) -> np.ndarray:
@@ -392,5 +311,6 @@ class PerspectiveTransformation(Component):
         self.context["output_size"] = [warped.shape[1], warped.shape[0]]
 
         return build_response(context=self)
+
 
 Executor(sys.argv[1]).run()
