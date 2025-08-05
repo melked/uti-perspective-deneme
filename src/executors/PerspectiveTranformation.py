@@ -343,9 +343,15 @@ def select_best_corners(points, img_shape):
 
 
 class PerspectiveTransformation(Component):
+    """
+    Auto perspective correction executor.
+    Detects a document-like quadrilateral and warps it to a target size.
+    Includes detailed preprocessing and detection options.
+    """
+
     def __init__(self, request, bootstrap):
         super().__init__(request, bootstrap)
-        self.context = {}
+        self.context = {} # Initialize context
 
         # self.request.data'nın bir sözlük olduğundan emin olun ve PackageModel'i güvenle başlatın
         if not isinstance(self.request.data, dict):
@@ -377,21 +383,16 @@ class PerspectiveTransformation(Component):
             print(f"HATA: 'inputImage' parametresi alınırken beklenmeyen bir hata oluştu: {e}")
             raise RuntimeError("'inputImage' parametresi alınamadı.") from e
 
-        # PackageModel'den keep_side ve warp_image_flag değerlerini alın
-        # Eğer PackageModel'de bu özellikler yoksa varsayılan değerler atayın
+        # PackageModel'den keep_side, output_width, output_height ve perspective_mode değerlerini alın
         # Assuming the structure of PackageModel based on the user's provided definition snippet
-        self.keep_side = getattr(getattr(getattr(getattr(self.request.model, 'configs', None), 'executor', None), 'value', None), 'configs', None)
-        self.keep_side = getattr(getattr(self.keep_side, 'drawBBox', None), 'value', False) if self.keep_side else False
+        configs = getattr(getattr(getattr(getattr(self.request.model, 'configs', None), 'executor', None), 'value', None), 'configs', None)
 
-        self.output_width = getattr(getattr(getattr(getattr(self.request.model, 'configs', None), 'executor', None), 'value', None), 'configs', None)
-        self.output_width = getattr(getattr(self.output_width, 'outputWidth', None), 'value', 800) if self.output_width else 800
+        self.keep_side = getattr(getattr(configs, 'drawBBox', None), 'value', False) if configs else False
+        self.output_width = getattr(getattr(configs, 'outputWidth', None), 'value', 800) if configs else 800
+        self.output_height = getattr(getattr(configs, 'outputHeight', None), 'value', 600) if configs else 600
 
-        self.output_height = getattr(getattr(getattr(getattr(self.request.model, 'configs', None), 'executor', None), 'value', None), 'configs', None)
-        self.output_height = getattr(getattr(self.output_height, 'outputHeight', None), 'value', 600) if self.output_height else 600
-
-        self.perspective_mode = getattr(getattr(getattr(getattr(self.request.model, 'configs', None), 'executor', None), 'value', None), 'configs', None)
-        self.perspective_mode = getattr(getattr(self.perspective_mode, 'PerspectiveTypeMode', None), 'value', None)
-        self.perspective_mode = getattr(self.perspective_mode, 'name', 'Auto') if self.perspective_mode else 'Auto'
+        perspective_mode_obj = getattr(getattr(configs, 'PerspectiveTypeMode', None), 'value', None)
+        self.perspective_mode = getattr(perspective_mode_obj, 'name', 'Auto') if perspective_mode_obj else 'Auto'
 
         self.warp_image_flag = True # Assuming warp_image is always desired
 
@@ -401,14 +402,19 @@ class PerspectiveTransformation(Component):
         return {}
 
     def _prepare_image(self, img: np.ndarray) -> np.ndarray:
+        """Canny öncesi: dtype, channel ve değer aralığını düzelt."""
         if img is None or img.size == 0:
             raise ValueError("Input image is empty or None.")
+
         if img.dtype != np.uint8:
             img = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-        if img.ndim == 2:
+
+        if len(img.shape) == 2:
             img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-        elif img.shape[-1] == 4:
+
+        if img.shape[-1] == 4:
             img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+
         return img
 
     # ----- ÖN İŞLEME FONKSİYONLARI (Sınıf Metodları Olarak) -----
@@ -1005,7 +1011,7 @@ class PerspectiveTransformation(Component):
         raise RuntimeError(error_message)
 
 
-    def run(self) -> Image:
+    def run(self):
         # self.image, __init__ içinde zaten ayarlanmıştır
         img = Image.get_frame(img=self.image, redis_db=self.redis_db)
         if img is None or img.value is None:
@@ -1020,6 +1026,7 @@ class PerspectiveTransformation(Component):
 
 
         img.value = warped
+        self.image = Image.set_frame(img=img, package_uID=self.uID, redis_db=self.redis_db)
 
         self.context = {
             "src_quad": src_quad.tolist(),
