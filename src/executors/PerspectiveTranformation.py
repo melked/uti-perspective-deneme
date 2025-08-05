@@ -2,9 +2,9 @@ import os
 import sys
 import cv2
 import numpy as np
-from typing import Optional, List
+from typing import Optional
 
-sys.path.append(os.path.join(os.path.dirname(__file__), "../../../../")) # Removed this line
+sys.path.append(os.path.join(os.path.dirname(__file__), "../../../../"))
 
 from sdks.novavision.src.media.image import Image
 from sdks.novavision.src.base.component import Component
@@ -12,18 +12,20 @@ from sdks.novavision.src.helper.executor import Executor
 from components.PerspectiveTransformation.src.utils.response import build_response
 from components.PerspectiveTransformation.src.models.PackageModel import PackageModel
 
+# ====================
+# Yardımcı Fonksiyonlar
+# ====================
 
 def _order_points(pts: np.ndarray) -> np.ndarray:
     pts = pts.reshape(4, 2)
     rect = np.zeros((4, 2), dtype=np.float32)
     s = pts.sum(axis=1)
     diff = np.diff(pts, axis=1)
-    rect[0] = pts[np.argmin(s)]     # top-left
-    rect[2] = pts[np.argmax(s)]     # bottom-right
-    rect[1] = pts[np.argmin(diff)]  # top-right
-    rect[3] = pts[np.argmax(diff)]  # bottom-left
+    rect[0] = pts[np.argmin(s)]       # top-left
+    rect[2] = pts[np.argmax(s)]       # bottom-right
+    rect[1] = pts[np.argmin(diff)]    # top-right
+    rect[3] = pts[np.argmax(diff)]    # bottom-left
     return rect
-
 
 def _four_point_transform(image: np.ndarray, pts: np.ndarray) -> np.ndarray:
     rect = _order_points(pts)
@@ -48,13 +50,34 @@ def _four_point_transform(image: np.ndarray, pts: np.ndarray) -> np.ndarray:
     warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight), flags=cv2.INTER_LANCZOS4)
     return warped
 
-
 def _full_image_quad(image: np.ndarray) -> np.ndarray:
     h, w = image.shape[:2]
-    return np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], dtype=np.float32)
+    return np.array([[0,0], [w-1,0], [w-1,h-1], [0,h-1]], dtype=np.float32)
 
+def _unsharp_mask(image: np.ndarray, ksize=(5,5), strength=1.5) -> np.ndarray:
+    blur = cv2.GaussianBlur(image, ksize, 0)
+    return cv2.addWeighted(image, 1 + strength, blur, -strength, 0)
 
-def _find_quad_from_contours(binary_img: np.ndarray, ref_image: np.ndarray, min_area_ratio=0.015, approx_epsilon_factor=0.01, angle_range=(50, 130)) -> Optional[np.ndarray]:
+def _gamma_correction(image: np.ndarray, gamma=1.5) -> np.ndarray:
+    invGamma = 1.0 / gamma
+    table = np.array([(i / 255.0) ** invGamma * 255 for i in range(256)]).astype("uint8")
+    return cv2.LUT(image, table)
+
+def _auto_gamma_correction(image: np.ndarray) -> np.ndarray:
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    mean = np.mean(gray)
+    if mean < 80:
+        gamma = 1.8
+    elif mean > 180:
+        gamma = 0.6
+    else:
+        gamma = 1.0
+    return _gamma_correction(image, gamma)
+
+# --------------------
+# Kontur Tabanlı Köşe Tespiti
+# --------------------
+def _find_quad_from_contours(binary_img: np.ndarray, ref_image: np.ndarray, min_area_ratio=0.03) -> Optional[np.ndarray]:
     contours, _ = cv2.findContours(binary_img, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
         return None
@@ -68,382 +91,203 @@ def _find_quad_from_contours(binary_img: np.ndarray, ref_image: np.ndarray, min_
         if area < min_area:
             continue
         peri = cv2.arcLength(c, True)
-        approx = cv2.approxPolyDP(c, approx_epsilon_factor * peri, True)
+        approx = cv2.approxPolyDP(c, 0.02 * peri, True)
         if len(approx) == 4 and cv2.isContourConvex(approx):
-            pts = approx.reshape(4, 2)
-            angles = []
-            for i in range(4):
-                p1 = pts[i]
-                p2 = pts[(i+1) % 4]
-                p0 = pts[(i-1) % 4]
-                v1 = p1 - p0
-                v2 = p2 - p1
-                dot_product = np.dot(v1, v2)
-                norm_product = np.linalg.norm(v1) * np.linalg.norm(v2)
-                if norm_product == 0:
-                    continue
-                cosine_angle = np.clip(dot_product / norm_product, -1.0, 1.0)
-                angle = abs(np.degrees(np.arccos(cosine_angle)))
-                angles.append(angle)
-            if all(angle_range[0] < a < angle_range[1] for a in angles):
-                return pts.astype(np.float32)
+            return approx.reshape(4,2).astype(np.float32)
     return None
 
-
-def _hough_quad_from_lines(lines: List[np.ndarray], image_shape) -> Optional[np.ndarray]:
-    if not lines or len(lines) < 4:
-        return None
-
-    # Find intersection points (simplified approach)
-    points = []
-    lines = lines.reshape(-1, 4)
-    for i in range(len(lines)):
-        for j in range(i + 1, len(lines)):
-            line1 = lines[i]
-            line2 = lines[j]
-            xdiff = (line1[0] - line1[2], line2[0] - line2[2])
-            ydiff = (line1[1] - line1[3], line2[1] - line2[3])
-
-            def det(a, b):
-                return a[0] * b[1] - a[1] * b[0]
-
-            div = det(xdiff, ydiff)
-            if div == 0:
-               continue
-
-            d = (det(*[line1[:2], line1[2:]]), det(*[line2[:2], line2[2:]]))
-            x = det(d, xdiff) / div
-            y = det(d, ydiff) / div
-
-            # Basic check if the intersection is within image bounds
-            if 0 <= x < image_shape[1] and 0 <= y < image_shape[0]:
-                 points.append([x, y])
-
-    if len(points) < 4:
-        return None
-
-    points = np.array(points, dtype=np.float32)
-
-    # Try to find the four extreme points as corners (simple approach)
-    # This is a simplification; a more robust method would cluster and select
-    min_x, min_y = np.min(points, axis=0)
-    max_x, max_y = np.max(points, axis=0)
-
-    # Find points closest to the corners of the bounding box
-    tl = points[np.argmin(np.sum(points - [min_x, min_y], axis=1))]
-    tr = points[np.argmin(np.sum(points - [max_x, min_y], axis=1))]
-    br = points[np.argmin(np.sum(points - [max_x, max_y], axis=1))]
-    bl = points[np.argmin(np.sum(points - [min_x, max_y], axis=1))]
-
-    quad = np.array([tl, tr, br, bl], dtype=np.float32)
-
-    # Validate quad (check angles, area) - simplified
-    rect = _order_points(quad)
-    (tl, tr, br, bl) = rect
-
-    width1 = np.linalg.norm(br - bl)
-    width2 = np.linalg.norm(tr - tl)
-    height1 = np.linalg.norm(tr - br)
-    height2 = np.linalg.norm(tl - bl)
-
-    if min(width1, width2, height1, height2) < 20: # Minimum size check
-        return None
-
-    return quad
-
-
-def _unsharp_mask(image: np.ndarray, ksize=(5, 5), strength=1.5) -> np.ndarray:
-    blur = cv2.GaussianBlur(image, ksize, 0)
-    return cv2.addWeighted(image, 1 + strength, blur, -strength, 0)
-
-
-def _gamma_correction(image: np.ndarray, gamma=1.5) -> np.ndarray:
-    invGamma = 1.0 / gamma
-    table = np.array([(i / 255.0) ** invGamma * 255 for i in np.arange(256)]).astype("uint8")
-    return cv2.LUT(image, table)
-
-
-def _auto_gamma_correction(image: np.ndarray) -> np.ndarray:
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    mean = np.mean(gray)
-    if mean < 80:
-        gamma = 1.8
-    elif mean > 180:
-        gamma = 0.6
-    else:
-        gamma = 1.0
-    return _gamma_correction(image, gamma)
-
-
-def _morph_ops(img: np.ndarray, close_iter=2, open_iter=1, kernel_size=(7, 7)) -> np.ndarray:
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, kernel_size)
-    img = cv2.morphologyEx(img, cv2.MORPH_CLOSE, kernel, iterations=close_iter)
-    img = cv2.morphologyEx(img, cv2.MORPH_OPEN, kernel, iterations=open_iter)
-    return img
-
-
-# ----------------------------
-# Ön İşleme Kombinasyonları
-# ----------------------------
-
-def _preprocess_combinations(image: np.ndarray):
-    """Birden fazla agresif ve soft ön işleme kombinasyonu döner"""
-
-    combinations = []
-
-    # Orijinal
-    combinations.append(("Original", image))
-
-    # Gamma + Sharpening
-    gamma_img_soft = _gamma_correction(image, 1.5)
-    combinations.append(("Gamma_Soft", gamma_img_soft))
-    combinations.append(("Gamma_Soft_Sharpened", _unsharp_mask(gamma_img_soft, ksize=(3,3), strength=1.0)))
-
-    gamma_img_aggressive = _gamma_correction(image, 2.2)
-    combinations.append(("Gamma_Aggressive", gamma_img_aggressive))
-    combinations.append(("Gamma_Aggressive_Sharpened", _unsharp_mask(gamma_img_aggressive, ksize=(5,5), strength=2.0)))
-
-
-    # CLAHE + Sharpening
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
-    clahe_img = clahe.apply(gray)
-    clahe_bgr = cv2.cvtColor(clahe_img, cv2.COLOR_GRAY2BGR)
-    combinations.append(("CLAHE", clahe_bgr))
-    combinations.append(("CLAHE_Sharpened", _unsharp_mask(clahe_bgr, ksize=(3,3), strength=1.0)))
-
-    # Blurring + Adaptive Threshold (requires grayscale)
-    blur_soft_gray = cv2.cvtColor(cv2.GaussianBlur(image, (3,3), 0), cv2.COLOR_BGR2GRAY)
-    combinations.append(("Blur_Soft_Gray", blur_soft_gray))
-
-    blur_aggressive_gray = cv2.cvtColor(cv2.GaussianBlur(image, (7,7), 0), cv2.COLOR_BGR2GRAY)
-    combinations.append(("Blur_Aggressive_Gray", blur_aggressive_gray))
-
-    # Auto Gamma Corrected
-    auto_gamma_img = _auto_gamma_correction(image)
-    combinations.append(("Auto_Gamma", auto_gamma_img))
-    combinations.append(("Auto_Gamma_Sharpened", _unsharp_mask(auto_gamma_img, ksize=(3,3), strength=1.0)))
-
-
-    return combinations
-
-
-# ----------------------------
-# Köşe Tespiti Yöntemleri
-# ----------------------------
-
-def _detect_corners_canny_contour(image: np.ndarray) -> Optional[np.ndarray]:
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, 50, 150)
-    morph = _morph_ops(edges, close_iter=2, open_iter=1)
-    return _find_quad_from_contours(morph, image)
-
-def _detect_corners_adaptive_thresh_contour(image: np.ndarray) -> Optional[np.ndarray]:
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    blur = cv2.bilateralFilter(gray, 9, 75, 75)
-    # sharpened = _unsharp_mask(blur) # Adaptive threshold works better on slightly smoothed images
-    thresh = cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
-    morph = _morph_ops(thresh, close_iter=1, open_iter=1)
-    return _find_quad_from_contours(morph, image)
-
-def _detect_corners_hough(image: np.ndarray) -> Optional[np.ndarray]:
+# --------------------
+# Hough Çizgi Bazlı Köşe Tespiti
+# --------------------
+def _auto_detect_corners_hough(image: np.ndarray) -> Optional[np.ndarray]:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     edges = cv2.Canny(gray, 50, 150, apertureSize=3)
     lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=80, minLineLength=50, maxLineGap=10)
-    if lines is None:
+    if lines is None or len(lines) < 4:
         return None
-    return _hough_quad_from_lines(lines, image.shape)
 
+    points = []
+    # Çizgi çiftlerinin kesişim noktalarını bul
+    for i in range(len(lines)):
+        for j in range(i+1, len(lines)):
+            line1 = lines[i][0]
+            line2 = lines[j][0]
+            pt = _line_intersection(line1, line2)
+            if pt is not None and _point_in_bounds(pt, image.shape):
+                points.append(pt)
 
-# ----------------------------
-# Skorlama ve Seçim
-# ----------------------------
+    # Kesişim noktalarını grupla ve en iyi 4 tanesini seç
+    if len(points) < 4:
+        return None
+    clustered = _cluster_points(points, max_clusters=4)
+    if clustered.shape[0] != 4:
+        return None
+    return clustered.astype(np.float32)
 
-def _score_quad(quad: np.ndarray, image_shape: tuple) -> float:
-    if quad is None:
-        return 0.0
+def _line_intersection(line1, line2):
+    # line = [x1,y1,x2,y2]
+    x1,y1,x2,y2 = line1
+    x3,y3,x4,y4 = line2
+    denom = (x1 - x2)*(y3 - y4) - (y1 - y2)*(x3 - x4)
+    if denom == 0:
+        return None
+    px = ((x1*y2 - y1*x2)*(x3 - x4) - (x1 - x2)*(x3*y4 - y3*x4)) / denom
+    py = ((x1*y2 - y1*x2)*(y3 - y4) - (y1 - y2)*(x3*y4 - y3*x4)) / denom
+    return [px, py]
 
-    # Ensure the quad is ordered for consistent scoring
-    quad = _order_points(quad)
-    (tl, tr, br, bl) = quad
+def _point_in_bounds(pt, shape):
+    x, y = pt
+    h, w = shape[:2]
+    return 0 <= x < w and 0 <= y < h
 
-    # 1. Aspect Ratio Score (closer to 1 is better for rectangles)
-    width1 = np.linalg.norm(br - bl)
-    width2 = np.linalg.norm(tr - tl)
-    height1 = np.linalg.norm(tr - br)
-    height2 = np.linalg.norm(tl - bl)
+def _cluster_points(points, max_clusters=4):
+    # K-means benzeri basit kümeleme yaparak 4 grup oluşturur
+    # Noktalar 2D numpy array olarak
+    pts = np.array(points)
+    from sklearn.cluster import KMeans
+    kmeans = KMeans(n_clusters=max_clusters, random_state=0).fit(pts)
+    centers = kmeans.cluster_centers_
+    return centers
 
-    avg_width = (width1 + width2) / 2.0
-    avg_height = (height1 + height2) / 2.0
+# --------------------
+# Çoklu Varyasyonlar (Soft & Agresif)
+# --------------------
 
-    if avg_height == 0 or avg_width == 0: # Prevent division by zero
-        return 0.0
+def _prepare_variations(image: np.ndarray):
+    """Farklı ön işleme varyasyonları üretir"""
+    variations = []
 
-    aspect_ratio = avg_width / avg_height
-    aspect_score = max(0.0, 1.0 - abs(aspect_ratio - 1.0)) # Penalize deviation from 1
+    # 1. Orijinal gamma auto düzeltmeli
+    gamma_auto = _auto_gamma_correction(image)
+    variations.append(("gamma_auto", gamma_auto))
 
-    # 2. Area Score (larger area relative to image area is better, up to a point)
-    quad_area = cv2.contourArea(quad)
-    image_area = image_shape[0] * image_shape[1]
-    area_ratio = quad_area / image_area
-    area_score = min(1.0, area_ratio * 2.0) # Score increases with area ratio, capped at 1
+    # 2. CLAHE + gamma_auto
+    gray = cv2.cvtColor(gamma_auto, cv2.COLOR_BGR2GRAY)
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+    clahe_img = clahe.apply(gray)
+    clahe_bgr = cv2.cvtColor(clahe_img, cv2.COLOR_GRAY2BGR)
+    variations.append(("clahe_gamma_auto", clahe_bgr))
 
-    # 3. Angle Score (closer to 90 degrees is better)
+    # 3. CLAHE + keskinleştirme + gamma_auto
+    sharpened = _unsharp_mask(clahe_bgr, strength=1.5)
+    variations.append(("clahe_sharp_gamma_auto", sharpened))
+
+    # 4. Keskinleştirme + gamma_auto
+    sharp = _unsharp_mask(gamma_auto, strength=1.5)
+    variations.append(("sharp_gamma_auto", sharp))
+
+    # 5. Sadece keskinleştirme
+    sharp_only = _unsharp_mask(image, strength=1.5)
+    variations.append(("sharp_only", sharp_only))
+
+    # 6. Yüksek kontrastlı adaptif eşik + keskinleştirme (daha agresif)
+    gray_orig = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    blur = cv2.bilateralFilter(gray_orig, 9, 75, 75)
+    sharpened_blur = _unsharp_mask(blur, strength=2.0)
+    thresh = cv2.adaptiveThreshold(
+        sharpened_blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY_INV, 11, 2)
+    thresh_bgr = cv2.cvtColor(thresh, cv2.COLOR_GRAY2BGR)
+    variations.append(("aggressive_thresh", thresh_bgr))
+
+    # 7. Parlaklık azaltılmış gamma düzeltmeli
+    gamma_low = _gamma_correction(image, gamma=0.6)
+    variations.append(("gamma_low", gamma_low))
+
+    # 8. Parlaklık artırılmış gamma düzeltmeli
+    gamma_high = _gamma_correction(image, gamma=1.8)
+    variations.append(("gamma_high", gamma_high))
+
+    return variations
+
+# --------------------
+# Kontur ve Hough sonuçlarını karşılaştır ve skorla
+# --------------------
+def _score_quad(quad: np.ndarray, image_shape) -> float:
+    # Dikdörtgensellik (köşeler arası açıya bak)
+    def angle(pt1, pt2, pt3):
+        a = np.array(pt1) - np.array(pt2)
+        b = np.array(pt3) - np.array(pt2)
+        cos_angle = np.dot(a,b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-10)
+        return np.arccos(np.clip(cos_angle, -1.0, 1.0)) * 180 / np.pi
+
     angles = []
+    quad = _order_points(quad)
     for i in range(4):
-        p1 = quad[i]
-        p2 = quad[(i+1) % 4]
-        p0 = quad[(i-1) % 4]
-        v1 = p1 - p0
-        v2 = p2 - p1
-        dot_product = np.dot(v1, v2)
-        norm_product = np.linalg.norm(v1) * np.linalg.norm(v2)
-        if norm_product == 0:
-             angles.append(0) # Handle degenerate case
-             continue
-        cosine_angle = np.clip(dot_product / norm_product, -1.0, 1.0)
-        angle = abs(np.degrees(np.arccos(cosine_angle)))
-        angles.append(angle)
+        angles.append(angle(quad[i], quad[(i+1)%4], quad[(i+2)%4]))
 
-    angle_deviations = [abs(a - 90) for a in angles]
-    avg_angle_deviation = np.mean(angle_deviations)
-    angle_score = max(0.0, 1.0 - (avg_angle_deviation / 45.0)) # Penalize deviation from 90
+    rectness_score = np.mean([abs(90 - a) for a in angles])  # 0’a yakın olması iyi
 
-    # Combine scores (weights can be adjusted)
-    combined_score = (aspect_score * 0.3) + (area_score * 0.4) + (angle_score * 0.3)
+    # Alan oranı (çok küçük alanlar kötü)
+    img_area = image_shape[0]*image_shape[1]
+    quad_area = cv2.contourArea(quad.reshape(4,1,2))
+    area_ratio = quad_area / img_area
 
-    return combined_score
+    # Skor: alan + dikdörtgensellik (küçük skor kötü)
+    # normalize etmek için çeviriyoruz
+    score = (area_ratio * 1000) - rectness_score * 2
 
+    return score
 
-def _select_best_quad_scored(quads: List[Tuple[np.ndarray, str]], ref_image_shape: tuple) -> np.ndarray:
-    scored_quads = [(quad, score, method) for quad, score, method in [(q, _score_quad(q, ref_image_shape), method) for q, method in quads] if q is not None]
+def _combine_quads(quad1: Optional[np.ndarray], quad2: Optional[np.ndarray], image_shape):
+    # İki quad benzer ise ortalamasını al
+    # Farklıysa skor bazlı en iyisini döndür
+    if quad1 is None and quad2 is None:
+        return None
+    if quad1 is None:
+        return quad2
+    if quad2 is None:
+        return quad1
 
-    if not scored_quads:
-        return _full_image_quad(np.zeros(ref_image_shape, dtype=np.uint8)) # Return full image quad with correct shape
-
-    # Sort by score in descending order
-    scored_quads.sort(key=lambda item: item[1], reverse=True)
-
-    # Simple selection: pick the highest-scoring quad
-    best_quad, best_score, best_method = scored_quads[0]
-
-    # Optional: Add a check for a minimum acceptable score, if the best score is too low, maybe fallback?
-    # For now, we just return the best found, or the full image if none found.
-
-    return best_quad
-
-
-# ----------------------------
-# Dinamik Çoklu Aşamalı Algoritma
-# ----------------------------
-
-def auto_detect_document_corners_dynamic(image: np.ndarray) -> np.ndarray:
-    """
-    Applies multiple preprocessing combinations and detection methods
-    to find the best document corners.
-    """
-    processed_combinations = _preprocess_combinations(image)
-
-    all_quads = []
-
-    for method_name, processed_img in processed_combinations:
-        if processed_img.ndim == 3: # Only apply color-based masks to color images
-            # Masking methods (if applicable to the processed image)
-            quad_lab_red = _find_quad_from_contours(_mask_lab_red_background(processed_img), processed_img)
-            if quad_lab_red is not None:
-                all_quads.append((quad_lab_red, f"{method_name}_LAB_Red"))
-
-            quad_lab_complex = _find_quad_from_contours(_mask_lab_complex(processed_img), processed_img)
-            if quad_lab_complex is not None:
-                all_quads.append((quad_lab_complex, f"{method_name}_LAB_Complex"))
-
-            # Contour-based detection methods
-            quad_canny = _detect_corners_canny_contour(processed_img)
-            if quad_canny is not None:
-                all_quads.append((quad_canny, f"{method_name}_Canny_Contour"))
-
-            quad_adaptive_thresh = _detect_corners_adaptive_thresh_contour(processed_img)
-            if quad_adaptive_thresh is not None:
-                 all_quads.append((quad_adaptive_thresh, f"{method_name}_AdaptiveThresh_Contour"))
-
-            # Hough Line method (can work on grayscale too, apply to color first)
-            quad_hough = _detect_corners_hough(processed_img)
-            if quad_hough is not None:
-                all_quads.append((quad_hough, f"{method_name}_Hough"))
-
-        elif processed_img.ndim == 2: # For grayscale images (like outputs of blurring, CLAHE)
-             # Contour-based detection methods on grayscale
-            quad_canny_gray = _find_quad_from_contours(_detect_edges_canny(processed_img), cv2.cvtColor(processed_img, cv2.COLOR_GRAY2BGR)) # Need BGR for _find_quad_from_contours ref_image
-            if quad_canny_gray is not None:
-                all_quads.append((quad_canny_gray, f"{method_name}_Canny_Contour_Gray"))
-
-            quad_adaptive_thresh_gray = _find_quad_from_contours(cv2.adaptiveThreshold(processed_img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2), cv2.cvtColor(processed_img, cv2.COLOR_GRAY2BGR))
-            if quad_adaptive_thresh_gray is not None:
-                 all_quads.append((quad_adaptive_thresh_gray, f"{method_name}_AdaptiveThresh_Contour_Gray"))
-
-             # Hough Line method on grayscale
-            quad_hough_gray = _detect_corners_hough(cv2.cvtColor(processed_img, cv2.COLOR_GRAY2BGR)) # Hough expects BGR input
-            if quad_hough_gray is not None:
-                all_quads.append((quad_hough_gray, f"{method_name}_Hough_Gray"))
-
-
-    # Select the best quad based on scoring
-    best_quad = _select_best_quad_scored(all_quads, image.shape)
-
-    # Fallback to full image quad if no valid quad was found or score was too low
-    if best_quad is None or _score_quad(best_quad, image.shape) < 0.4: # Example threshold
-         return _full_image_quad(image)
-
-    return best_quad
-
-
-# ----------------------------
-# Maskeleme Fonksiyonları (Updated to return binary masks)
-# ----------------------------
-
-def _mask_lab_red_background(image: np.ndarray) -> np.ndarray:
-    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
-    L, A, B = cv2.split(lab)
-    mask_a = cv2.inRange(A, 130, 170)
-    mask_b = cv2.inRange(B, 120, 160)
-    color_mask = cv2.bitwise_or(mask_a, mask_b)
-    L_blur = cv2.GaussianBlur(L, (5, 5), 0)
-    light_mask = cv2.adaptiveThreshold(L_blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 5)
-    edge_mask = cv2.Canny(L_blur, 40, 120)
-    combined = cv2.bitwise_or(light_mask, edge_mask)
-    combined = cv2.bitwise_and(combined, cv2.bitwise_not(color_mask))
-    return _morph_ops(combined)
-
-
-def _mask_lab_complex(image: np.ndarray) -> np.ndarray:
-    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
-    L, A, B = cv2.split(lab)
-    _, mask_a = cv2.threshold(A, 135, 255, cv2.THRESH_BINARY_INV)
-    _, mask_b = cv2.threshold(B, 135, 255, cv2.THRESH_BINARY)
-    color_mask = cv2.bitwise_and(mask_a, mask_b)
-    L_blur = cv2.GaussianBlur(L, (5, 5), 0)
-    light_mask = cv2.adaptiveThreshold(L_blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 5)
-    edge_mask = cv2.Canny(L_blur, 40, 120)
-    combined = cv2.bitwise_or(light_mask, edge_mask)
-    combined = cv2.bitwise_and(combined, color_mask)
-    return _morph_ops(combined)
-
-# ----------------------------
-# Kenar Tespiti Fonksiyonları (kept for internal use if needed)
-# ----------------------------
-
-def _detect_edges_canny(image: np.ndarray, low=50, high=150) -> np.ndarray:
-    # Can be applied to BGR or Grayscale
-    if image.ndim == 3:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    dist = np.linalg.norm(np.sort(quad1, axis=0) - np.sort(quad2, axis=0))
+    if dist < 50:
+        return (quad1 + quad2) / 2
     else:
-        gray = image
-    edges = cv2.Canny(gray, low, high)
-    return edges
+        score1 = _score_quad(quad1, image_shape)
+        score2 = _score_quad(quad2, image_shape)
+        return quad1 if score1 > score2 else quad2
 
+# --------------------
+# Ana Fonksiyon: Tüm varyasyonları test et
+# --------------------
+def _detect_best_quad(image: np.ndarray) -> np.ndarray:
+    variations = _prepare_variations(image)
+    best_quad = None
+    best_score = -np.inf
+
+    for name, var_img in variations:
+        # Ön işlemli varyasyonlar üzerinde önce kontur tespiti
+        gray = cv2.cvtColor(var_img, cv2.COLOR_BGR2GRAY)
+        if "aggressive_thresh" in name:
+            # Threshold hali zaten binary, direkt kullan
+            binary = gray
+        else:
+            # Adaptif threshold (soft versiyon)
+            binary = cv2.adaptiveThreshold(
+                gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY_INV, 11, 2)
+
+        quad_contour = _find_quad_from_contours(binary, image)
+
+        # Hough ile de dene
+        quad_hough = _auto_detect_corners_hough(var_img)
+
+        # İki quadı birleştir/skorla en iyisini seç
+        quad = _combine_quads(quad_contour, quad_hough, image.shape)
+
+        if quad is not None:
+            score = _score_quad(quad, image.shape)
+            if score > best_score:
+                best_score = score
+                best_quad = quad
+
+    if best_quad is None:
+        # Hiç bulunamadıysa full image döndür
+        return _full_image_quad(image)
+    return _order_points(best_quad)
 
 # ====================
-# Ana Component
+# Ana Component Class
 # ====================
 class PerspectiveTransformation(Component):
     def __init__(self, request, bootstrap):
@@ -473,7 +317,7 @@ class PerspectiveTransformation(Component):
             raise ValueError("No input image provided or failed to load.")
 
         src_img = self._prepare_image(img_obj.value)
-        pts = auto_detect_document_corners_dynamic(src_img)
+        pts = _detect_best_quad(src_img)
         warped = _four_point_transform(src_img, pts)
 
         img_obj.value = warped
@@ -483,6 +327,5 @@ class PerspectiveTransformation(Component):
         self.context["output_size"] = [warped.shape[1], warped.shape[0]]
 
         return build_response(context=self)
-
 
 Executor(sys.argv[1]).run()
