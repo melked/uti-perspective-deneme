@@ -292,6 +292,7 @@ class PerspectiveTransformation(Component):
             img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
         return img
 
+
     def run(self):
         img_obj = Image.get_frame(img=self.image, redis_db=self.redis_db)
         if img_obj is None or img_obj.value is None:
