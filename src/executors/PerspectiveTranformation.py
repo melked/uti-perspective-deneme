@@ -24,7 +24,6 @@ def _order_points(pts: np.ndarray) -> np.ndarray:
     rect[3] = pts[np.argmax(diff)]
     return rect
 
-
 def _four_point_transform(image: np.ndarray, pts: np.ndarray) -> np.ndarray:
     rect = _order_points(pts)
     (tl, tr, br, bl) = rect
@@ -45,76 +44,44 @@ def _four_point_transform(image: np.ndarray, pts: np.ndarray) -> np.ndarray:
     ], dtype=np.float32)
 
     M = cv2.getPerspectiveTransform(rect, dst)
-
     warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight), flags=cv2.INTER_LANCZOS4)
-
     return warped
 
-
-
+# -------------------
+# Kenar Tespit Metodları
+# -------------------
 def _auto_detect_document_corners_sharpen_adaptive(image: np.ndarray) -> np.ndarray:
-
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-    blur = cv2.bilateralFilter(gray, d=9, sigmaColor=75, sigmaSpace=75)
-
+    blur = cv2.bilateralFilter(gray, 9, 75, 75)
     sharpen_kernel = np.array([[0, -1, 0],
                                [-1, 5, -1],
                                [0, -1, 0]])
     sharpened = cv2.filter2D(blur, -1, sharpen_kernel)
-
-    # 4. Adaptive Threshold
     thresh = cv2.adaptiveThreshold(
-        sharpened, 255,
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        sharpened, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
         cv2.THRESH_BINARY_INV, 11, 2
     )
-
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
     morph = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
     morph = cv2.morphologyEx(morph, cv2.MORPH_OPEN, kernel)
-    contours, _ = cv2.findContours(morph, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-
-    if not contours:
-        h, w = image.shape[:2]
-        return np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], dtype=np.float32)
-
-    contours = sorted(contours, key=cv2.contourArea, reverse=True)
-    img_area = image.shape[0] * image.shape[1]
-    min_area = img_area * 0.01
-
-    for c in contours:
-        if cv2.contourArea(c) < min_area:
-            continue
-        peri = cv2.arcLength(c, True)
-        approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-        if len(approx) == 4 and cv2.isContourConvex(approx):
-            return approx.reshape(4, 2).astype(np.float32)
-
-    h, w = image.shape[:2]
-    return np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], dtype=np.float32)
-
+    return _find_quad_from_contours(morph, image)
 
 def _auto_detect_document_corners_clahe_canny(image: np.ndarray) -> np.ndarray:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     clahe_img = clahe.apply(gray)
-
     edges = cv2.Canny(clahe_img, 30, 150)
-
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
     morph = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+    return _find_quad_from_contours(morph, image)
 
-    contours, _ = cv2.findContours(morph, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+def _find_quad_from_contours(binary_img: np.ndarray, ref_image: np.ndarray) -> np.ndarray:
+    contours, _ = cv2.findContours(binary_img, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
-        h, w = image.shape[:2]
-        return np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], dtype=np.float32)
-
+        return _full_image_quad(ref_image)
     contours = sorted(contours, key=cv2.contourArea, reverse=True)
-    img_area = image.shape[0] * image.shape[1]
+    img_area = ref_image.shape[0] * ref_image.shape[1]
     min_area = img_area * 0.01
-
     for c in contours:
         if cv2.contourArea(c) < min_area:
             continue
@@ -122,22 +89,50 @@ def _auto_detect_document_corners_clahe_canny(image: np.ndarray) -> np.ndarray:
         approx = cv2.approxPolyDP(c, 0.02 * peri, True)
         if len(approx) == 4 and cv2.isContourConvex(approx):
             return approx.reshape(4, 2).astype(np.float32)
+    return _full_image_quad(ref_image)
 
+def _full_image_quad(image: np.ndarray) -> np.ndarray:
     h, w = image.shape[:2]
     return np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], dtype=np.float32)
 
+def _unsharp_mask(image, ksize=(5, 5), strength=1.5):
+    blur = cv2.GaussianBlur(image, ksize, 0)
+    return cv2.addWeighted(image, 1 + strength, blur, -strength, 0)
 
+def _auto_detect_document_corners_hough(image: np.ndarray) -> np.ndarray:
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 50, 150, apertureSize=3)
+    lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=80, minLineLength=50, maxLineGap=10)
+    if lines is None or len(lines) < 4:
+        return _full_image_quad(image)
+    all_points = np.vstack([lines[:, 0, :2], lines[:, 0, 2:]])
+    x_min, y_min = np.min(all_points, axis=0)
+    x_max, y_max = np.max(all_points, axis=0)
+    return np.array([[x_min, y_min], [x_max, y_min], [x_max, y_max], [x_min, y_max]], dtype=np.float32)
+
+# -------------------
+# Dinamik seçim
+# -------------------
 def auto_detect_document_corners_dynamic(image: np.ndarray) -> np.ndarray:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     contrast = gray.max() - gray.min()
-    threshold = 50
+    brightness = np.mean(gray)
 
-    if contrast < threshold:
-        return _auto_detect_document_corners_sharpen_adaptive(image)
+    if contrast < 40:  # bulanık/loş
+        sharpened = _unsharp_mask(gray)
+        return _auto_detect_document_corners_sharpen_adaptive(cv2.cvtColor(sharpened, cv2.COLOR_GRAY2BGR))
+    elif brightness > 180:  # açık arka plan
+        darkened = cv2.convertScaleAbs(gray, alpha=0.9, beta=-30)
+        return _auto_detect_document_corners_clahe_canny(cv2.cvtColor(darkened, cv2.COLOR_GRAY2BGR))
     else:
-        return _auto_detect_document_corners_clahe_canny(image)
+        pts = _auto_detect_document_corners_clahe_canny(image)
+        if np.allclose(pts, _full_image_quad(image), atol=1):  # kenar bulunamadıysa
+            return _auto_detect_document_corners_hough(image)
+        return pts
 
-
+# -------------------
+# Ana Component
+# -------------------
 class PerspectiveTransformation(Component):
     def __init__(self, request, bootstrap):
         super().__init__(request, bootstrap)
