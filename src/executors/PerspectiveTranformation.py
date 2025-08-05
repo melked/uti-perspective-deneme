@@ -89,6 +89,18 @@ def _gamma_correction(image: np.ndarray, gamma=1.5) -> np.ndarray:
     return cv2.LUT(image, table)
 
 
+def _auto_gamma_correction(image: np.ndarray) -> np.ndarray:
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    mean = np.mean(gray)
+    if mean < 80:
+        gamma = 1.8  # koyu fotoğraflar için parlaklık artır
+    elif mean > 180:
+        gamma = 0.6  # parlak fotoğraflar için koyultma
+    else:
+        gamma = 1.0  # normal
+    return _gamma_correction(image, gamma)
+
+
 # ====================
 # Yeni LAB Range Maskeleme (Kırmızı arka plan + gri belge için)
 # ====================
@@ -206,44 +218,44 @@ def _auto_detect_document_corners_hough(image: np.ndarray) -> np.ndarray:
 
 
 # ====================
-# Dinamik seçim (Yeniden düzenlendi)
+# Dinamik seçim (Güncellenmiş)
 # ====================
 def auto_detect_document_corners_dynamic(image: np.ndarray) -> np.ndarray:
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    corrected = _auto_gamma_correction(image)
+    gray = cv2.cvtColor(corrected, cv2.COLOR_BGR2GRAY)
     contrast = gray.max() - gray.min()
     brightness = np.mean(gray)
 
-    # Öncelikle kırmızı arka plan için yeni LAB range maskeleme dene
+    # Öncelikle kırmızı arka plan için LAB range maskeleme
     pts = None
-    mask = _mask_background_lab_range(image)
-    pts = _find_quad_from_contours(mask, image)
-    if not np.allclose(pts, _full_image_quad(image), atol=1):
+    mask = _mask_background_lab_range(corrected)
+    pts = _find_quad_from_contours(mask, corrected)
+    if not np.allclose(pts, _full_image_quad(corrected), atol=1):
         return pts
 
-    # Önceki yöntemlere sırayla devam
     if contrast < 40:
-        return _auto_detect_document_corners_sharpen_adaptive(image)
+        return _auto_detect_document_corners_sharpen_adaptive(corrected)
     elif brightness > 200:
-        pts = _auto_detect_document_corners_bright_blur(image)
-        if not np.allclose(pts, _full_image_quad(image), atol=1):
+        pts = _auto_detect_document_corners_bright_blur(corrected)
+        if not np.allclose(pts, _full_image_quad(corrected), atol=1):
             return pts
-        pts = _auto_detect_document_corners_clahe_canny(image)
-        if not np.allclose(pts, _full_image_quad(image), atol=1):
+        pts = _auto_detect_document_corners_clahe_canny(corrected)
+        if not np.allclose(pts, _full_image_quad(corrected), atol=1):
             return pts
-        mask = _mask_background_complex(image)
-        pts = _find_quad_from_contours(mask, image)
-        if not np.allclose(pts, _full_image_quad(image), atol=1):
+        mask = _mask_background_complex(corrected)
+        pts = _find_quad_from_contours(mask, corrected)
+        if not np.allclose(pts, _full_image_quad(corrected), atol=1):
             return pts
-        return _auto_detect_document_corners_hough(image)
+        return _auto_detect_document_corners_hough(corrected)
     elif brightness > 180:
-        return _auto_detect_document_corners_clahe_canny(image)
+        return _auto_detect_document_corners_clahe_canny(corrected)
     else:
-        pts = _auto_detect_document_corners_clahe_canny(image)
-        if np.allclose(pts, _full_image_quad(image), atol=1):
-            mask = _mask_background_complex(image)
-            pts = _find_quad_from_contours(mask, image)
-            if np.allclose(pts, _full_image_quad(image), atol=1):
-                return _auto_detect_document_corners_hough(image)
+        pts = _auto_detect_document_corners_clahe_canny(corrected)
+        if np.allclose(pts, _full_image_quad(corrected), atol=1):
+            mask = _mask_background_complex(corrected)
+            pts = _find_quad_from_contours(mask, corrected)
+            if np.allclose(pts, _full_image_quad(corrected), atol=1):
+                return _auto_detect_document_corners_hough(corrected)
         return pts
 
 
