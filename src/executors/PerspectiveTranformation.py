@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 from typing import Optional, List
 
-sys.path.append(os.path.join(os.path.dirname(__file__), "../../../../"))
+sys.path.append(os.path.join(os.path.dirname(__file__), "../../../../")) # Removed this line
 
 from sdks.novavision.src.media.image import Image
 from sdks.novavision.src.base.component import Component
