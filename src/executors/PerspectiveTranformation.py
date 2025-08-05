@@ -64,7 +64,7 @@ def _find_quad_from_contours(binary_img: np.ndarray, ref_image: np.ndarray) -> n
 
     contours = sorted(contours, key=cv2.contourArea, reverse=True)
     img_area = ref_image.shape[0] * ref_image.shape[1]
-    min_area = img_area * 0.05  # daha büyük konturlar seçilsin
+    min_area = img_area * 0.05  # biraz daha yüksek eşik
 
     for c in contours:
         area = cv2.contourArea(c)
@@ -90,7 +90,38 @@ def _gamma_correction(image: np.ndarray, gamma=1.5) -> np.ndarray:
 
 
 # ====================
-# Kenar Tespit Yöntemleri
+# Yeni LAB Range Maskeleme (Kırmızı arka plan + gri belge için)
+# ====================
+def _mask_background_lab_range(image: np.ndarray) -> np.ndarray:
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    L, A, B = cv2.split(lab)
+
+    # A ve B kanallarında kırmızı arka plan aralıkları
+    mask_a = cv2.inRange(A, 130, 170)
+    mask_b = cv2.inRange(B, 120, 160)
+
+    color_mask = cv2.bitwise_or(mask_a, mask_b)
+
+    L_blur = cv2.GaussianBlur(L, (5, 5), 0)
+    light_mask = cv2.adaptiveThreshold(
+        L_blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY, 15, 5
+    )
+
+    edge_mask = cv2.Canny(L_blur, 40, 120)
+
+    combined = cv2.bitwise_or(light_mask, edge_mask)
+    combined = cv2.bitwise_and(combined, cv2.bitwise_not(color_mask))  # Arka planı kaldır
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
+    combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel, iterations=2)
+    combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, kernel, iterations=1)
+
+    return combined
+
+
+# ====================
+# Diğer Kenar Tespit Yöntemleri
 # ====================
 def _auto_detect_document_corners_sharpen_adaptive(image: np.ndarray) -> np.ndarray:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -175,13 +206,21 @@ def _auto_detect_document_corners_hough(image: np.ndarray) -> np.ndarray:
 
 
 # ====================
-# Dinamik seçim
+# Dinamik seçim (Yeniden düzenlendi)
 # ====================
 def auto_detect_document_corners_dynamic(image: np.ndarray) -> np.ndarray:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     contrast = gray.max() - gray.min()
     brightness = np.mean(gray)
 
+    # Öncelikle kırmızı arka plan için yeni LAB range maskeleme dene
+    pts = None
+    mask = _mask_background_lab_range(image)
+    pts = _find_quad_from_contours(mask, image)
+    if not np.allclose(pts, _full_image_quad(image), atol=1):
+        return pts
+
+    # Önceki yöntemlere sırayla devam
     if contrast < 40:
         return _auto_detect_document_corners_sharpen_adaptive(image)
     elif brightness > 200:
