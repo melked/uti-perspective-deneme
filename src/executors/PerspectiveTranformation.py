@@ -16,18 +16,20 @@ from components.PerspectiveTransformation.src.models.PackageModel import Package
 # ========== Yardımcı Fonksiyonlar ==========
 
 def _order_points(pts: np.ndarray) -> np.ndarray:
+    """4 köşe noktasını: [üst-sol, üst-sağ, alt-sağ, alt-sol] şeklinde sırala."""
     pts = pts.reshape(4, 2)
     rect = np.zeros((4, 2), dtype=np.float32)
     s = pts.sum(axis=1)
     diff = np.diff(pts, axis=1)
-    rect[0] = pts[np.argmin(s)]
-    rect[2] = pts[np.argmax(s)]
-    rect[1] = pts[np.argmin(diff)]
-    rect[3] = pts[np.argmax(diff)]
+    rect[0] = pts[np.argmin(s)]  # en küçük toplam = üst-sol
+    rect[2] = pts[np.argmax(s)]  # en büyük toplam = alt-sağ
+    rect[1] = pts[np.argmin(diff)]  # en küçük fark = üst-sağ
+    rect[3] = pts[np.argmax(diff)]  # en büyük fark = alt-sol
     return rect
 
 
 def _four_point_transform(image: np.ndarray, pts: np.ndarray) -> np.ndarray:
+    """Verilen 4 köşeye göre perspektif düzeltmesi yap."""
     rect = _order_points(pts)
     (tl, tr, br, bl) = rect
 
@@ -52,11 +54,13 @@ def _four_point_transform(image: np.ndarray, pts: np.ndarray) -> np.ndarray:
 
 
 def _full_image_quad(image: np.ndarray) -> np.ndarray:
+    """Resmin tamamını kapsayan 4 köşe noktası döner."""
     h, w = image.shape[:2]
     return np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], dtype=np.float32)
 
 
 def _find_quad_from_contours(binary_img: np.ndarray, ref_image: np.ndarray, min_area_ratio=0.05) -> np.ndarray:
+    """Verilen binary görüntüden 4 köşe şeklinde büyük kontur bulmaya çalışır."""
     contours, _ = cv2.findContours(binary_img, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
         return _full_image_quad(ref_image)
@@ -73,21 +77,18 @@ def _find_quad_from_contours(binary_img: np.ndarray, ref_image: np.ndarray, min_
         approx = cv2.approxPolyDP(c, 0.02 * peri, True)
         if len(approx) == 4 and cv2.isContourConvex(approx):
             return approx.reshape(4, 2).astype(np.float32)
+
     return _full_image_quad(ref_image)
 
 
-def _unsharp_mask(image, ksize=(5, 5), strength=1.5):
+def _unsharp_mask(image: np.ndarray, ksize=(5, 5), strength=1.5) -> np.ndarray:
+    """Görüntüyü keskinleştir (unsharp mask)."""
     blur = cv2.GaussianBlur(image, ksize, 0)
     return cv2.addWeighted(image, 1 + strength, blur, -strength, 0)
 
 
-def _gamma_correction(image: np.ndarray, gamma=1.5) -> np.ndarray:
-    invGamma = 1.0 / gamma
-    table = np.array([(i / 255.0) ** invGamma * 255 for i in np.arange(256)]).astype("uint8")
-    return cv2.LUT(image, table)
-
-
 def _auto_gamma_correction(image: np.ndarray) -> np.ndarray:
+    """Otomatik gamma düzeltmesi yapar (ortalamaya göre ayarlanır)."""
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     mean = np.mean(gray)
     if mean < 80:
@@ -96,10 +97,13 @@ def _auto_gamma_correction(image: np.ndarray) -> np.ndarray:
         gamma = 0.6
     else:
         gamma = 1.0
-    return _gamma_correction(image, gamma)
+    invGamma = 1.0 / gamma
+    table = np.array([(i / 255.0) ** invGamma * 255 for i in np.arange(256)]).astype("uint8")
+    return cv2.LUT(image, table)
 
 
 def _mask_background_lab_range(image: np.ndarray) -> np.ndarray:
+    """LAB renk uzayına göre arka planı maskele."""
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
     L, A, B = cv2.split(lab)
 
@@ -126,76 +130,8 @@ def _mask_background_lab_range(image: np.ndarray) -> np.ndarray:
     return combined
 
 
-def _auto_detect_document_corners_sharpen_adaptive(image: np.ndarray) -> np.ndarray:
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    blur = cv2.bilateralFilter(gray, 9, 75, 75)
-    sharpened = _unsharp_mask(blur)
-    thresh = cv2.adaptiveThreshold(
-        sharpened, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY_INV, 11, 2
-    )
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-    morph = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
-    morph = cv2.morphologyEx(morph, cv2.MORPH_OPEN, kernel)
-    return _find_quad_from_contours(morph, image)
-
-
-def _auto_detect_document_corners_clahe_canny(image: np.ndarray) -> np.ndarray:
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    clahe_img = clahe.apply(gray)
-    edges = cv2.Canny(clahe_img, 50, 150)
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-    morph = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
-    return _find_quad_from_contours(morph, image)
-
-
-def _auto_detect_document_corners_bright_blur(image: np.ndarray) -> np.ndarray:
-    gamma_corrected = _gamma_correction(image, gamma=1.8)
-
-    gray = cv2.cvtColor(gamma_corrected, cv2.COLOR_BGR2GRAY)
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-    clahe_img = clahe.apply(gray)
-
-    sharp = _unsharp_mask(clahe_img, ksize=(5, 5), strength=1.5)
-
-    edges = cv2.Canny(sharp, 30, 120)
-
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
-    closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=2)
-
-    pts = _find_quad_from_contours(closed, image)
-    return pts
-
-
-def _mask_background_complex(image: np.ndarray) -> np.ndarray:
-    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
-    L, A, B = cv2.split(lab)
-
-    _, mask_a = cv2.threshold(A, 135, 255, cv2.THRESH_BINARY_INV)
-    _, mask_b = cv2.threshold(B, 135, 255, cv2.THRESH_BINARY)
-
-    color_mask = cv2.bitwise_and(mask_a, mask_b)
-
-    L_blur = cv2.GaussianBlur(L, (5, 5), 0)
-    light_mask = cv2.adaptiveThreshold(
-        L_blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY, 15, 5
-    )
-
-    edge_mask = cv2.Canny(L_blur, 40, 120)
-
-    combined = cv2.bitwise_or(light_mask, edge_mask)
-    combined = cv2.bitwise_and(combined, color_mask)
-
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
-    combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel, iterations=2)
-    combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, kernel, iterations=1)
-
-    return combined
-
-
 def _filter_lines_by_angle(lines, angle_tol=10):
+    """Çizgileri, yatay veya dikey açılara yakın olanlarla filtrele."""
     if lines is None:
         return None
     filtered = []
@@ -208,82 +144,15 @@ def _filter_lines_by_angle(lines, angle_tol=10):
 
 
 def adaptive_canny(image_gray):
+    """Otomatik eşik değerleri ile Canny kenar algılama."""
     median_val = np.median(image_gray)
     lower = int(max(0, 0.7 * median_val))
     upper = int(min(255, 1.3 * median_val))
     return cv2.Canny(image_gray, lower, upper)
 
 
-def _auto_detect_document_corners_hough_improved(image: np.ndarray) -> np.ndarray:
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    edges = adaptive_canny(gray)
-    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=80, minLineLength=50, maxLineGap=10)
-
-    lines = _filter_lines_by_angle(lines, angle_tol=15)
-    if lines is None or len(lines) < 4:
-        return _full_image_quad(image)
-
-    all_points = np.vstack([lines[:, 0, :2], lines[:, 0, 2:]])
-    x_min, y_min = np.min(all_points, axis=0)
-    x_max, y_max = np.max(all_points, axis=0)
-    return np.array([[x_min, y_min], [x_max, y_min], [x_max, y_max], [x_min, y_max]], dtype=np.float32)
-
-
-def _texture_mask_gabor(image: np.ndarray, ksize=31, sigma=4.0, theta=np.pi/4, lambd=10.0, gamma=0.5) -> np.ndarray:
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    g_kernel = cv2.getGaborKernel((ksize, ksize), sigma, theta, lambd, gamma, 0, ktype=cv2.CV_32F)
-    filtered = cv2.filter2D(gray, cv2.CV_8UC3, g_kernel)
-    _, mask = cv2.threshold(filtered, 50, 255, cv2.THRESH_BINARY)
-    return mask
-
-
-def _reduce_background_texture(image: np.ndarray, texture_mask: np.ndarray) -> np.ndarray:
-    blurred = cv2.GaussianBlur(image, (15, 15), 0)
-    mask_inv = cv2.bitwise_not(texture_mask)
-    reduced_texture = cv2.bitwise_and(image, image, mask=mask_inv)
-    blurred_part = cv2.bitwise_and(blurred, blurred, mask=texture_mask)
-    combined = cv2.add(reduced_texture, blurred_part)
-    return combined
-
-
-def _auto_detect_document_corners_lab_adaptive(image: np.ndarray) -> np.ndarray:
-    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
-    L, A, B = cv2.split(lab)
-
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    clahe_L = clahe.apply(L)
-
-    thresh_L = cv2.adaptiveThreshold(
-        clahe_L, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY_INV, 15, 2
-    )
-
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, 50, 150)
-
-    combined = cv2.bitwise_or(thresh_L, edges)
-
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-    morph = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel)
-    morph = cv2.morphologyEx(morph, cv2.MORPH_OPEN, kernel)
-
-    return _find_quad_from_contours(morph, image)
-
-
-def _auto_detect_document_corners_color_segmentation(image: np.ndarray) -> np.ndarray:
-    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-
-    lower_light = np.array([0, 0, 180])
-    upper_light = np.array([180, 30, 255])
-    mask_light = cv2.inRange(hsv, lower_light, upper_light)
-
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
-    morph = cv2.morphologyEx(mask_light, cv2.MORPH_CLOSE, kernel)
-    morph = cv2.morphologyEx(morph, cv2.MORPH_OPEN, kernel)
-
-    return _find_quad_from_contours(morph, image)
-
 def _line_intersection(line1, line2):
+    """İki çizginin kesişim noktasını hesapla."""
     x1, y1, x2, y2 = line1
     x3, y3, x4, y4 = line2
 
@@ -298,6 +167,7 @@ def _line_intersection(line1, line2):
 
 
 def _get_intersections(lines, img_shape):
+    """Çizgi çiftlerinin kesişim noktalarını bul, görüntü içinde olanları döndür."""
     intersections = []
     for i in range(len(lines)):
         for j in range(i+1, len(lines)):
@@ -311,38 +181,52 @@ def _get_intersections(lines, img_shape):
 
 
 def _select_corners(points):
+    """Kesişim noktalarından dışbükey 4 köşe seç."""
     if len(points) < 4:
         return None
     hull = cv2.convexHull(points.astype(np.float32))
     pts = hull.reshape(-1, 2)
     if len(pts) < 4:
         return None
-    # Sadece 4 nokta seç (en dıştaki 4)
+    # Eğer 4'ten fazla nokta varsa ilk 4'ü al (daha gelişmiş seçme opsiyonel)
     if len(pts) > 4:
         pts = pts[:4]
     rect = _order_points(pts)
     return rect
 
+
 def auto_detect_document_corners_dynamic(image: np.ndarray) -> np.ndarray:
+    """
+    Çok aşamalı belge köşe tespiti:
+    - Gamma ve doku maskesi ile arka plan azaltma,
+    - LAB renk segmentasyonu ile maskeleme,
+    - Hough çizgileriyle kesişim bazlı köşe seçme,
+    - Çoklu senaryolar için fallback algoritmalar
+    """
+
     corrected = _auto_gamma_correction(image)
 
+    # Doku maskesi ile arka planı azalt
     texture_mask = _texture_mask_gabor(corrected)
     reduced_texture_img = _reduce_background_texture(corrected, texture_mask)
 
+    # 1) LAB renk maskesi
     mask = _mask_background_lab_range(reduced_texture_img)
     pts = _find_quad_from_contours(mask, reduced_texture_img)
     if not np.allclose(pts, _full_image_quad(reduced_texture_img), atol=1):
         return pts
 
+    # 2) Renk segmentasyonu
     pts = _auto_detect_document_corners_color_segmentation(reduced_texture_img)
     if not np.allclose(pts, _full_image_quad(reduced_texture_img), atol=1):
          return pts
 
+    # 3) LAB adaptif threshold + Canny
     pts = _auto_detect_document_corners_lab_adaptive(reduced_texture_img)
     if not np.allclose(pts, _full_image_quad(reduced_texture_img), atol=1):
         return pts
 
-    # --- BURASI EKLENDİ: Hough çizgileri ile 90° kesişim noktalarından köşe seç ---
+    # 4) Hough lines ve kesişim noktalarından köşe seçimi (yeni eklenti)
     gray = cv2.cvtColor(reduced_texture_img, cv2.COLOR_BGR2GRAY)
     edges = adaptive_canny(gray)
     lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=80, minLineLength=50, maxLineGap=10)
@@ -352,12 +236,12 @@ def auto_detect_document_corners_dynamic(image: np.ndarray) -> np.ndarray:
         corners = _select_corners(intersections)
         if corners is not None:
             return corners
-    # ---
 
     gray = cv2.cvtColor(reduced_texture_img, cv2.COLOR_BGR2GRAY)
     contrast = gray.max() - gray.min()
     brightness = np.mean(gray)
 
+    # 5) Parlaklık ve kontrast durumlarına göre fallback yöntemleri
     if contrast < 40:
         return _auto_detect_document_corners_sharpen_adaptive(reduced_texture_img)
     elif brightness > 200:
