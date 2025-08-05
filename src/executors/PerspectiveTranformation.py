@@ -64,10 +64,11 @@ def _find_quad_from_contours(binary_img: np.ndarray, ref_image: np.ndarray) -> n
 
     contours = sorted(contours, key=cv2.contourArea, reverse=True)
     img_area = ref_image.shape[0] * ref_image.shape[1]
-    min_area = img_area * 0.02  # küçük gürültüleri elemek için
+    min_area = img_area * 0.05  # daha büyük konturlar seçilsin
 
     for c in contours:
-        if cv2.contourArea(c) < min_area:
+        area = cv2.contourArea(c)
+        if area < min_area:
             continue
         peri = cv2.arcLength(c, True)
         approx = cv2.approxPolyDP(c, 0.02 * peri, True)
@@ -79,6 +80,13 @@ def _find_quad_from_contours(binary_img: np.ndarray, ref_image: np.ndarray) -> n
 def _unsharp_mask(image, ksize=(5, 5), strength=1.5):
     blur = cv2.GaussianBlur(image, ksize, 0)
     return cv2.addWeighted(image, 1 + strength, blur, -strength, 0)
+
+
+def _gamma_correction(image: np.ndarray, gamma=1.5) -> np.ndarray:
+    invGamma = 1.0 / gamma
+    table = np.array([(i / 255.0) ** invGamma * 255
+                      for i in np.arange(256)]).astype("uint8")
+    return cv2.LUT(image, table)
 
 
 # ====================
@@ -108,21 +116,48 @@ def _auto_detect_document_corners_clahe_canny(image: np.ndarray) -> np.ndarray:
     return _find_quad_from_contours(morph, image)
 
 
+def _auto_detect_document_corners_bright_blur(image: np.ndarray) -> np.ndarray:
+    gamma_corrected = _gamma_correction(image, gamma=1.8)
+
+    gray = cv2.cvtColor(gamma_corrected, cv2.COLOR_BGR2GRAY)
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+    clahe_img = clahe.apply(gray)
+
+    sharp = _unsharp_mask(clahe_img, ksize=(5,5), strength=1.5)
+
+    edges = cv2.Canny(sharp, 30, 120)
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7,7))
+    closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+    pts = _find_quad_from_contours(closed, image)
+    return pts
+
+
 def _mask_background_complex(image: np.ndarray) -> np.ndarray:
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
     L, A, B = cv2.split(lab)
 
-    L_blur = cv2.GaussianBlur(L, (5, 5), 0)
+    _, mask_a = cv2.threshold(A, 135, 255, cv2.THRESH_BINARY_INV)
+    _, mask_b = cv2.threshold(B, 135, 255, cv2.THRESH_BINARY)
 
+    color_mask = cv2.bitwise_and(mask_a, mask_b)
+
+    L_blur = cv2.GaussianBlur(L, (5, 5), 0)
     light_mask = cv2.adaptiveThreshold(
         L_blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
         cv2.THRESH_BINARY, 15, 5
     )
+
     edge_mask = cv2.Canny(L_blur, 40, 120)
+
     combined = cv2.bitwise_or(light_mask, edge_mask)
+    combined = cv2.bitwise_and(combined, color_mask)
 
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
     combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel, iterations=2)
+    combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, kernel, iterations=1)
+
     return combined
 
 
@@ -148,22 +183,27 @@ def auto_detect_document_corners_dynamic(image: np.ndarray) -> np.ndarray:
     brightness = np.mean(gray)
 
     if contrast < 40:
-        # düşük kontrast → sharpen + adaptive
         return _auto_detect_document_corners_sharpen_adaptive(image)
-
+    elif brightness > 200:
+        pts = _auto_detect_document_corners_bright_blur(image)
+        if not np.allclose(pts, _full_image_quad(image), atol=1):
+            return pts
+        pts = _auto_detect_document_corners_clahe_canny(image)
+        if not np.allclose(pts, _full_image_quad(image), atol=1):
+            return pts
+        mask = _mask_background_complex(image)
+        pts = _find_quad_from_contours(mask, image)
+        if not np.allclose(pts, _full_image_quad(image), atol=1):
+            return pts
+        return _auto_detect_document_corners_hough(image)
     elif brightness > 180:
-        # çok parlak → CLAHE + canny
         return _auto_detect_document_corners_clahe_canny(image)
-
     else:
-        # normal kontrast → önce CLAHE dene
         pts = _auto_detect_document_corners_clahe_canny(image)
         if np.allclose(pts, _full_image_quad(image), atol=1):
-            # başarısızsa maskeleme
             mask = _mask_background_complex(image)
             pts = _find_quad_from_contours(mask, image)
             if np.allclose(pts, _full_image_quad(image), atol=1):
-                # hâlâ başarısızsa hough
                 return _auto_detect_document_corners_hough(image)
         return pts
 
