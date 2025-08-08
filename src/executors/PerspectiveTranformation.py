@@ -333,6 +333,38 @@ def _auto_detect_document_corners_gradient_magnitude(image: np.ndarray) -> np.nd
     morph = cv2.morphologyEx(morph, cv2.MORPH_OPEN, kernel)
     return _find_quad_from_contours(morph, image)
 
+def _auto_detect_document_corners_laplacian(image: np.ndarray) -> np.ndarray:
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+    laplacian = np.uint8(np.absolute(laplacian))
+    _, thresh = cv2.threshold(laplacian, 30, 255, cv2.THRESH_BINARY)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    morph = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+    morph = cv2.morphologyEx(morph, cv2.MORPH_OPEN, kernel)
+    return _find_quad_from_contours(morph, image)
+
+def _auto_detect_document_corners_morphological_gradient(image: np.ndarray) -> np.ndarray:
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    gradient = cv2.morphologyEx(gray, cv2.MORPH_GRADIENT, kernel)
+    _, thresh = cv2.threshold(gradient, 30, 255, cv2.THRESH_BINARY)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    morph = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+    morph = cv2.morphologyEx(morph, cv2.MORPH_OPEN, kernel)
+    return _find_quad_from_contours(morph, image)
+
+def _auto_detect_document_corners_combined_edges(image: np.ndarray) -> np.ndarray:
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    edges_canny = cv2.Canny(gray, 50, 150)
+    laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+    laplacian = np.uint8(np.absolute(laplacian))
+    _, edges_laplacian = cv2.threshold(laplacian, 30, 255, cv2.THRESH_BINARY)
+    combined_edges = cv2.bitwise_or(edges_canny, edges_laplacian)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    morph = cv2.morphologyEx(combined_edges, cv2.MORPH_CLOSE, kernel)
+    morph = cv2.morphologyEx(morph, cv2.MORPH_OPEN, kernel)
+    return _find_quad_from_contours(morph, image)
+
 
 def _score_quad(image: np.ndarray, quad: np.ndarray) -> float:
     # Implement scoring logic based on heatmap and geometric properties
@@ -356,6 +388,9 @@ def detect_document_candidates(image: np.ndarray) -> List[np.ndarray]:
         "hough_improved": _auto_detect_document_corners_hough_improved,
         "inverse_threshold": _auto_detect_document_corners_inverse_threshold,
         "gradient_magnitude": _auto_detect_document_corners_gradient_magnitude,
+        "laplacian": _auto_detect_document_corners_laplacian,
+        "morphological_gradient": _auto_detect_document_corners_morphological_gradient,
+        "combined_edges": _auto_detect_document_corners_combined_edges,
     }
 
     for name, func in variants.items():
