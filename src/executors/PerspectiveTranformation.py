@@ -38,6 +38,10 @@ def _four_point_transform(image: np.ndarray, pts: np.ndarray) -> np.ndarray:
     heightB = np.linalg.norm(tl - bl)
     maxHeight = int(round(max(heightA, heightB)))
 
+    # guard against degenerate sizes
+    maxWidth = max(2, maxWidth)
+    maxHeight = max(2, maxHeight)
+
     dst = np.array([
         [0, 0],
         [maxWidth - 1, 0],
@@ -228,6 +232,7 @@ def _texture_mask_gabor(image: np.ndarray, ksize=31, sigma=4.0, theta=np.pi/4, l
     _, mask = cv2.threshold(filtered, 50, 255, cv2.THRESH_BINARY)
     return mask
 
+
 def _auto_detect_document_corners_lab_adaptive(image: np.ndarray) -> np.ndarray:
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
     L, A, B = cv2.split(lab)
@@ -267,6 +272,7 @@ def _auto_detect_document_corners_color_segmentation(image: np.ndarray) -> np.nd
 
     return _find_quad_from_contours(morph, image)
 
+
 def _auto_detect_document_corners_inverse_threshold(image: np.ndarray) -> np.ndarray:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
@@ -276,11 +282,13 @@ def _auto_detect_document_corners_inverse_threshold(image: np.ndarray) -> np.nda
     morph = cv2.morphologyEx(morph, cv2.MORPH_OPEN, kernel)
     return _find_quad_from_contours(morph, image)
 
+
 def _auto_detect_document_corners_gradient_magnitude(image: np.ndarray) -> np.ndarray:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     grad_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
     grad_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
     mag, angle = cv2.cartToPolar(grad_x, grad_y, angleInDegrees=True)
+    mag = cv2.convertScaleAbs(mag)
     _, thresh = cv2.threshold(mag, 50, 255, cv2.THRESH_BINARY)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
     morph = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
@@ -288,10 +296,13 @@ def _auto_detect_document_corners_gradient_magnitude(image: np.ndarray) -> np.nd
     return _find_quad_from_contours(morph, image)
 
 
-def _score_quad(image: np.ndarray, quad: np.ndarray) -> float:
-    # Implement scoring logic based on heatmap and geometric properties
-    # This is a placeholder and needs to be implemented
-    return 1.0  # Placeholder score
+# --- New helper utilities ---
+
+def _is_blurry(image: np.ndarray, threshold=100.0) -> bool:
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    lap_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+    return lap_var < threshold
+
 
 def _adaptive_contrast_enhancement(image: np.ndarray) -> np.ndarray:
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
@@ -315,19 +326,29 @@ def _adaptive_contrast_enhancement(image: np.ndarray) -> np.ndarray:
         gamma = 1.0
 
     return _gamma_correction(img_clahe, gamma=gamma)
+
+
 def _preprocess_image_for_edges(image: np.ndarray) -> np.ndarray:
-    # Bilateral filtre ile gürültü azaltma, kenar koruma
-    bilateral = cv2.bilateralFilter(image, d=9, sigmaColor=75, sigmaSpace=75)
-    # CLAHE kontrast iyileştirme (L kanalında)
+    # Contrast + denoise + sharpen pipeline
+    img_corr = _adaptive_contrast_enhancement(image)
+
+    if _is_blurry(img_corr):
+        img_corr = _unsharp_mask(img_corr, ksize=(3, 3), strength=1.8)
+
+    # Bilateral filter for edge-preserving smoothing
+    bilateral = cv2.bilateralFilter(img_corr, d=9, sigmaColor=75, sigmaSpace=75)
+
+    # Final CLAHE on L channel to strengthen edges
     lab = cv2.cvtColor(bilateral, cv2.COLOR_BGR2LAB)
     L, A, B = cv2.split(lab)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     cl = clahe.apply(L)
     lab_clahe = cv2.merge((cl, A, B))
     img_clahe = cv2.cvtColor(lab_clahe, cv2.COLOR_LAB2BGR)
-    # Unsharp mask ile keskinlik arttırma
-    sharpened = _unsharp_mask(img_clahe)
-    return sharpened
+
+    return img_clahe
+
+
 def _auto_canny(image: np.ndarray, sigma=0.33):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     v = np.median(gray)
@@ -335,32 +356,141 @@ def _auto_canny(image: np.ndarray, sigma=0.33):
     upper = int(min(255, (1.0 + sigma) * v))
     edges = cv2.Canny(gray, lower, upper)
     return edges
+
+
+def _advanced_edge_mask(image: np.ndarray) -> np.ndarray:
+    # combine adaptive canny, Sobel magnitude and morphological cleaning
+    edges1 = _auto_canny(image)
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    sobelx = cv2.Sobel(gray, cv2.CV_16S, 1, 0)
+    sobely = cv2.Sobel(gray, cv2.CV_16S, 0, 1)
+    mag = cv2.magnitude(sobelx.astype(np.float32), sobely.astype(np.float32))
+    mag = cv2.convertScaleAbs(mag)
+    _, mag_mask = cv2.threshold(mag, 30, 255, cv2.THRESH_BINARY)
+
+    combined = cv2.bitwise_or(edges1, mag_mask)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel, iterations=2)
+    combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, kernel, iterations=1)
+    return combined
+
+
+# --- Scoring function implemented ---
+
+def _score_quad(image: np.ndarray, quad: np.ndarray) -> float:
+    # Score based on area, angle regularity, edge density inside warped result, and aspect ratio sanity
+    h, w = image.shape[:2]
+    img_area = h * w
+
+    # area score (0..1)
+    quad_area = cv2.contourArea(quad.astype(np.float32))
+    area_score = min(1.0, quad_area / (0.1 * img_area))  # prefer quads at least 10% of image
+
+    # angle regularity (closer to 90 deg better)
+    def angle(a, b, c):
+        ab = a - b
+        cb = c - b
+        dot = np.dot(ab, cb)
+        denom = (np.linalg.norm(ab) * np.linalg.norm(cb)) + 1e-8
+        cosv = np.clip(dot / denom, -1.0, 1.0)
+        return np.degrees(np.arccos(cosv))
+
+    angs = []
+    for i in range(4):
+        a = quad[i]
+        b = quad[(i + 1) % 4]
+        c = quad[(i + 2) % 4]
+        angs.append(angle(a, b, c))
+    angs = np.array(angs)
+    angle_deviation = np.mean(np.abs(angs - 90.0))  # 0 is perfect
+    angle_score = max(0.0, 1.0 - (angle_deviation / 45.0))  # degrade to 0 at 45 deg avg dev
+
+    # aspect ratio check of warped image
+    warped = _four_point_transform(image, quad)
+    wh_ratio = warped.shape[1] / (warped.shape[0] + 1e-8)
+    # sane aspect ratios for documents generally between 0.2 and 5
+    if 0.2 <= wh_ratio <= 5:
+        ar_score = 1.0
+    else:
+        ar_score = max(0.0, 1.0 - abs(np.log(wh_ratio + 1e-8)))
+
+    # edge density: good documents often have borders/text giving some edge density
+    gray_w = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray_w, 50, 150)
+    edge_density = np.sum(edges > 0) / edges.size
+    edge_score = min(1.0, edge_density * 5.0)
+
+    # center proximity: if quad center is near image center that's slightly better
+    quad_center = np.mean(quad, axis=0)
+    img_center = np.array([w / 2.0, h / 2.0])
+    center_dist = np.linalg.norm(quad_center - img_center) / np.linalg.norm([w, h])
+    center_score = max(0.0, 1.0 - center_dist * 2.0)
+
+    # weighted combination
+    score = (0.35 * area_score) + (0.25 * angle_score) + (0.15 * edge_score) + (0.15 * ar_score) + (0.10 * center_score)
+    return float(score)
+
+
 def detect_document_candidates(image: np.ndarray) -> List[np.ndarray]:
     candidates = []
-    img_corrected = _adaptive_contrast_enhancement(image)
-    img_preprocessed = _preprocess_image_for_edges(img_corrected)
+    img_preprocessed = _preprocess_image_for_edges(image)
 
-    variants = {
-        "lab_range": lambda img: _find_quad_from_contours(_mask_background_lab_range(img), img),
-        "color_segmentation": _auto_detect_document_corners_color_segmentation,
-        "lab_adaptive": _auto_detect_document_corners_lab_adaptive,
-        "sharpen_adaptive": _auto_detect_document_corners_sharpen_adaptive,
-        "bright_blur": _auto_detect_document_corners_bright_blur,
-        "clahe_canny": _auto_detect_document_corners_clahe_canny,
-        "mask_background_complex": lambda img: _find_quad_from_contours(_mask_background_complex(img), img),
-        "hough_improved": _auto_detect_document_corners_hough_improved,
-        "inverse_threshold": _auto_detect_document_corners_inverse_threshold,
-        "gradient_magnitude": _auto_detect_document_corners_gradient_magnitude,
-        "advanced_edge_mask": lambda img: _find_quad_from_contours(_advanced_edge_mask(img), img_preprocessed)
-    }
+    # Grouped strategy: try fast & robust methods first, then fallbacks
+    primary_methods = [
+        _auto_detect_document_corners_clahe_canny,
+        _auto_detect_document_corners_bright_blur,
+        _auto_detect_document_corners_sharpen_adaptive,
+        lambda img: _find_quad_from_contours(_mask_background_lab_range(img), img)
+    ]
 
-    for name, func in variants.items():
+    secondary_methods = [
+        _auto_detect_document_corners_hough_improved,
+        _auto_detect_document_corners_lab_adaptive,
+        _auto_detect_document_corners_inverse_threshold,
+        _auto_detect_document_corners_gradient_magnitude,
+        _auto_detect_document_corners_color_segmentation,
+        lambda img: _find_quad_from_contours(_mask_background_complex(img), img),
+        lambda img: _find_quad_from_contours(_advanced_edge_mask(img), img)
+    ]
+
+    for func in primary_methods:
         try:
             quad = func(img_preprocessed)
             if not np.allclose(quad, _full_image_quad(image), atol=1):
                 candidates.append(quad)
-        except Exception as e:
-            print(f"Error in {name} variant: {e}")
+        except Exception:
+            continue
+        if candidates:
+            break
+
+    if not candidates:
+        for func in secondary_methods:
+            try:
+                quad = func(img_preprocessed)
+                if not np.allclose(quad, _full_image_quad(image), atol=1):
+                    candidates.append(quad)
+            except Exception:
+                continue
+            if candidates:
+                break
+
+    if not candidates:
+        # try a multi-scale approach as last resort
+        h, w = image.shape[:2]
+        for scale in [1.0, 0.75, 0.5]:
+            if scale == 1.0:
+                img_scale = img_preprocessed
+            else:
+                img_scale = cv2.resize(img_preprocessed, (int(w * scale), int(h * scale)))
+            try:
+                quad = _auto_detect_document_corners_clahe_canny(img_scale)
+                if quad is not None and not np.allclose(quad, _full_image_quad(img_scale), atol=1):
+                    # scale quad back
+                    quad = (quad / scale).astype(np.float32)
+                    candidates.append(quad)
+                    break
+            except Exception:
+                continue
 
     if not candidates:
         candidates.append(_full_image_quad(image))
@@ -370,10 +500,13 @@ def detect_document_candidates(image: np.ndarray) -> List[np.ndarray]:
 
 def select_best_quad(image: np.ndarray, candidates: List[np.ndarray]) -> np.ndarray:
     best_quad = _full_image_quad(image)
-    best_score = -1
+    best_score = -1.0
 
     for quad in candidates:
-        score = _score_quad(image, quad)
+        try:
+            score = _score_quad(image, quad)
+        except Exception:
+            score = -1.0
         if score > best_score:
             best_score = score
             best_quad = quad
@@ -403,7 +536,6 @@ class PerspectiveTransformation(Component):
             img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
         return img
 
-
     def run(self):
         img_obj = Image.get_frame(img=self.image, redis_db=self.redis_db)
         if img_obj is None or img_obj.value is None:
@@ -419,6 +551,14 @@ class PerspectiveTransformation(Component):
 
         warped = _four_point_transform(src_img, best_quad)
 
+        # Optional: final cleanup - crop near-white borders and small black margins
+        gray_w = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
+        _, bw = cv2.threshold(gray_w, 250, 255, cv2.THRESH_BINARY)
+        coords = cv2.findNonZero(255 - bw)
+        if coords is not None:
+            x, y, w_box, h_box = cv2.boundingRect(coords)
+            warped = warped[y:y + h_box, x:x + w_box]
+
         img_obj.value = warped
         self.image = Image.set_frame(img=img_obj, package_uID=self.uID, redis_db=self.redis_db)
 
@@ -428,4 +568,5 @@ class PerspectiveTransformation(Component):
         return build_response(context=self)
 
 
-Executor(sys.argv[1]).run()
+if __name__ == "__main__":
+    Executor(sys.argv[1]).run()
