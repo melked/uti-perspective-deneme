@@ -451,6 +451,7 @@ class PerspectiveTransformation(Component):
 
         src_img = self._prepare_image(img_obj.value)
 
+
         # Detect candidate quads from different methods
         candidates = detect_document_candidates(src_img)
 
