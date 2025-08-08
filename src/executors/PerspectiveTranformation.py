@@ -207,16 +207,9 @@ def _filter_lines_by_angle(lines, angle_tol=10):
     return np.array(filtered) if filtered else None
 
 
-def adaptive_canny(image_gray):
-    median_val = np.median(image_gray)
-    lower = int(max(0, 0.7 * median_val))
-    upper = int(min(255, 1.3 * median_val))
-    return cv2.Canny(image_gray, lower, upper)
-
-
 def _auto_detect_document_corners_hough_improved(image: np.ndarray) -> np.ndarray:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    edges = adaptive_canny(gray)
+    edges = cv2.Canny(gray, 50, 150, apertureSize=3)
     lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=80, minLineLength=50, maxLineGap=10)
 
     lines = _filter_lines_by_angle(lines, angle_tol=15)
@@ -236,28 +229,21 @@ def _texture_mask_gabor(image: np.ndarray, ksize=31, sigma=4.0, theta=np.pi/4, l
     _, mask = cv2.threshold(filtered, 50, 255, cv2.THRESH_BINARY)
     return mask
 
-
-def _reduce_background_texture(image: np.ndarray, texture_mask: np.ndarray) -> np.ndarray:
-    blurred = cv2.GaussianBlur(image, (15, 15), 0)
-    mask_inv = cv2.bitwise_not(texture_mask)
-    reduced_texture = cv2.bitwise_and(image, image, mask=mask_inv)
-    blurred_part = cv2.bitwise_and(blurred, blurred, mask=texture_mask)
-    combined = cv2.add(reduced_texture, blurred_part)
-    return combined
-
-
 def _auto_detect_document_corners_lab_adaptive(image: np.ndarray) -> np.ndarray:
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
     L, A, B = cv2.split(lab)
 
+    # Enhance contrast in L channel
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     clahe_L = clahe.apply(L)
 
+    # Adaptive thresholding on enhanced L channel
     thresh_L = cv2.adaptiveThreshold(
         clahe_L, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
         cv2.THRESH_BINARY_INV, 15, 2
     )
 
+    # Combine with edge detection on the original image
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     edges = cv2.Canny(gray, 50, 150)
 
@@ -271,11 +257,16 @@ def _auto_detect_document_corners_lab_adaptive(image: np.ndarray) -> np.ndarray:
 
 
 def _auto_detect_document_corners_color_segmentation(image: np.ndarray) -> np.ndarray:
+    # Simple color segmentation (example: looking for a dominant color range)
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
 
+    # Example: white/light colors - adjust range based on expected document color
     lower_light = np.array([0, 0, 180])
     upper_light = np.array([180, 30, 255])
     mask_light = cv2.inRange(hsv, lower_light, upper_light)
+
+    # More sophisticated color analysis might be needed here
+    # based on expected document/background colors
 
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
     morph = cv2.morphologyEx(mask_light, cv2.MORPH_CLOSE, kernel)
@@ -286,57 +277,56 @@ def _auto_detect_document_corners_color_segmentation(image: np.ndarray) -> np.nd
 
 def auto_detect_document_corners_dynamic(image: np.ndarray) -> np.ndarray:
     corrected = _auto_gamma_correction(image)
-
-    # Arka plan dokusunu azalt
-    texture_mask = _texture_mask_gabor(corrected)
-    reduced_texture_img = _reduce_background_texture(corrected, texture_mask)
-
-    gray = cv2.cvtColor(reduced_texture_img, cv2.COLOR_BGR2GRAY)
+    gray = cv2.cvtColor(corrected, cv2.COLOR_BGR2GRAY)
     contrast = gray.max() - gray.min()
     brightness = np.mean(gray)
 
     pts = None
 
-    mask = _mask_background_lab_range(reduced_texture_img)
-    pts = _find_quad_from_contours(mask, reduced_texture_img)
-    if not np.allclose(pts, _full_image_quad(reduced_texture_img), atol=1):
+    # Try LAB space masking first for robust background removal
+    mask = _mask_background_lab_range(corrected)
+    pts = _find_quad_from_contours(mask, corrected)
+    if not np.allclose(pts, _full_image_quad(corrected), atol=1):
         return pts
 
-    pts = _auto_detect_document_corners_color_segmentation(reduced_texture_img)
-    if not np.allclose(pts, _full_image_quad(reduced_texture_img), atol=1):
+    # Try color segmentation
+    pts = _auto_detect_document_corners_color_segmentation(corrected)
+    if not np.allclose(pts, _full_image_quad(corrected), atol=1):
          return pts
 
-    pts = _auto_detect_document_corners_lab_adaptive(reduced_texture_img)
-    if not np.allclose(pts, _full_image_quad(reduced_texture_img), atol=1):
+    # Try LAB adaptive approach
+    pts = _auto_detect_document_corners_lab_adaptive(corrected)
+    if not np.allclose(pts, _full_image_quad(corrected), atol=1):
         return pts
 
+    # Fallback to previous methods based on contrast/brightness if others fail
     if contrast < 40:
-        return _auto_detect_document_corners_sharpen_adaptive(reduced_texture_img)
+        return _auto_detect_document_corners_sharpen_adaptive(corrected)
     elif brightness > 200:
-        pts = _auto_detect_document_corners_bright_blur(reduced_texture_img)
-        if not np.allclose(pts, _full_image_quad(reduced_texture_img), atol=1):
+        pts = _auto_detect_document_corners_bright_blur(corrected)
+        if not np.allclose(pts, _full_image_quad(corrected), atol=1):
             return pts
-        pts = _auto_detect_document_corners_clahe_canny(reduced_texture_img)
-        if not np.allclose(pts, _full_image_quad(reduced_texture_img), atol=1):
+        pts = _auto_detect_document_corners_clahe_canny(corrected)
+        if not np.allclose(pts, _full_image_quad(corrected), atol=1):
             return pts
-        mask = _mask_background_complex(reduced_texture_img)
-        pts = _find_quad_from_contours(mask, reduced_texture_img)
-        if not np.allclose(pts, _full_image_quad(reduced_texture_img), atol=1):
+        mask = _mask_background_complex(corrected)
+        pts = _find_quad_from_contours(mask, corrected)
+        if not np.allclose(pts, _full_image_quad(corrected), atol=1):
             return pts
-        return _auto_detect_document_corners_hough_improved(reduced_texture_img)
+        return _auto_detect_document_corners_hough_improved(corrected)
     elif brightness > 180:
-        return _auto_detect_document_corners_clahe_canny(reduced_texture_img)
+        return _auto_detect_document_corners_clahe_canny(corrected)
     else:
-        pts = _auto_detect_document_corners_clahe_canny(reduced_texture_img)
-        if np.allclose(pts, _full_image_quad(reduced_texture_img), atol=1):
-            mask = _mask_background_complex(reduced_texture_img)
-            pts = _find_quad_from_contours(mask, reduced_texture_img)
-            if np.allclose(pts, _full_image_quad(reduced_texture_img), atol=1):
-                 pts = _auto_detect_document_corners_hough_improved(reduced_texture_img)
-                 if np.allclose(pts, _full_image_quad(reduced_texture_img), atol=1):
-                     pts = _find_quad_from_contours(_mask_background_lab_range(reduced_texture_img), reduced_texture_img, min_area_ratio=0.1)
+        pts = _auto_detect_document_corners_clahe_canny(corrected)
+        if np.allclose(pts, _full_image_quad(corrected), atol=1):
+            mask = _mask_background_complex(corrected)
+            pts = _find_quad_from_contours(mask, corrected)
+            if np.allclose(pts, _full_image_quad(corrected), atol=1):
+                 pts = _auto_detect_document_corners_hough_improved(corrected)
+                 if np.allclose(pts, _full_image_quad(corrected), atol=1):
+                     # Final fallback, consider increasing min_area_ratio for noisy images
+                     pts = _find_quad_from_contours(_mask_background_lab_range(corrected), corrected, min_area_ratio=0.1)
         return pts
-
 
 class PerspectiveTransformation(Component):
     def __init__(self, request, bootstrap):
