@@ -420,8 +420,10 @@ class PerspectiveTransformation(Component):
         # Select the best quad based on scoring
         best_quad = select_best_quad(src_img, candidates)
 
-        warped = _four_point_transform(src_img, best_quad)
+        # Apply perspective transform
+        warped = four_point_transform(src_img, best_quad)
 
+        # Update image object and context
         img_obj.value = warped
         self.image = Image.set_frame(img=img_obj, package_uID=self.uID, redis_db=self.redis_db)
 
