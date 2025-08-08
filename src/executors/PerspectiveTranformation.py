@@ -2,7 +2,8 @@ import os
 import sys
 import cv2
 import numpy as np
-from typing import Optional
+
+from typing import Optional, List, Tuple
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../../../"))
 
@@ -12,8 +13,6 @@ from sdks.novavision.src.helper.executor import Executor
 from components.PerspectiveTransformation.src.utils.response import build_response
 from components.PerspectiveTransformation.src.models.PackageModel import PackageModel
 
-
-# ========== Yardımcı Fonksiyonlar ==========
 
 def _order_points(pts: np.ndarray) -> np.ndarray:
     pts = pts.reshape(4, 2)
@@ -233,17 +232,14 @@ def _auto_detect_document_corners_lab_adaptive(image: np.ndarray) -> np.ndarray:
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
     L, A, B = cv2.split(lab)
 
-    # Enhance contrast in L channel
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     clahe_L = clahe.apply(L)
 
-    # Adaptive thresholding on enhanced L channel
     thresh_L = cv2.adaptiveThreshold(
         clahe_L, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
         cv2.THRESH_BINARY_INV, 15, 2
     )
 
-    # Combine with edge detection on the original image
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     edges = cv2.Canny(gray, 50, 150)
 
@@ -257,16 +253,13 @@ def _auto_detect_document_corners_lab_adaptive(image: np.ndarray) -> np.ndarray:
 
 
 def _auto_detect_document_corners_color_segmentation(image: np.ndarray) -> np.ndarray:
-    # Simple color segmentation (example: looking for a dominant color range)
+
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
 
-    # Example: white/light colors - adjust range based on expected document color
     lower_light = np.array([0, 0, 180])
     upper_light = np.array([180, 30, 255])
     mask_light = cv2.inRange(hsv, lower_light, upper_light)
 
-    # More sophisticated color analysis might be needed here
-    # based on expected document/background colors
 
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
     morph = cv2.morphologyEx(mask_light, cv2.MORPH_CLOSE, kernel)
@@ -275,58 +268,55 @@ def _auto_detect_document_corners_color_segmentation(image: np.ndarray) -> np.nd
     return _find_quad_from_contours(morph, image)
 
 
-def auto_detect_document_corners_dynamic(image: np.ndarray) -> np.ndarray:
-    corrected = _auto_gamma_correction(image)
-    gray = cv2.cvtColor(corrected, cv2.COLOR_BGR2GRAY)
-    contrast = gray.max() - gray.min()
-    brightness = np.mean(gray)
+def _score_quad(image: np.ndarray, quad: np.ndarray) -> float:
+    # Implement scoring logic based on heatmap and geometric properties
+    # This is a placeholder and needs to be implemented
+    return 1.0  # Placeholder score
 
-    pts = None
 
-    # Try LAB space masking first for robust background removal
-    mask = _mask_background_lab_range(corrected)
-    pts = _find_quad_from_contours(mask, corrected)
-    if not np.allclose(pts, _full_image_quad(corrected), atol=1):
-        return pts
+def detect_document_candidates(image: np.ndarray) -> List[np.ndarray]:
+    candidates = []
+    img_corrected = _auto_gamma_correction(image)
 
-    # Try color segmentation
-    pts = _auto_detect_document_corners_color_segmentation(corrected)
-    if not np.allclose(pts, _full_image_quad(corrected), atol=1):
-         return pts
+    # Try different detection variants
+    variants = {
+        "lab_range": lambda img: _find_quad_from_contours(_mask_background_lab_range(img), img),
+        "color_segmentation": _auto_detect_document_corners_color_segmentation,
+        "lab_adaptive": _auto_detect_document_corners_lab_adaptive,
+        "sharpen_adaptive": _auto_detect_document_corners_sharpen_adaptive,
+        "bright_blur": _auto_detect_document_corners_bright_blur,
+        "clahe_canny": _auto_detect_document_corners_clahe_canny,
+        "mask_background_complex": lambda img: _find_quad_from_contours(_mask_background_complex(img), img),
+        "hough_improved": _auto_detect_document_corners_hough_improved,
+    }
 
-    # Try LAB adaptive approach
-    pts = _auto_detect_document_corners_lab_adaptive(corrected)
-    if not np.allclose(pts, _full_image_quad(corrected), atol=1):
-        return pts
+    for name, func in variants.items():
+        try:
+            quad = func(img_corrected)
+            if not np.allclose(quad, _full_image_quad(image), atol=1):
+                candidates.append(quad)
+        except Exception as e:
+            print(f"Error in {name} variant: {e}")
+            pass # Continue with other variants
 
-    # Fallback to previous methods based on contrast/brightness if others fail
-    if contrast < 40:
-        return _auto_detect_document_corners_sharpen_adaptive(corrected)
-    elif brightness > 200:
-        pts = _auto_detect_document_corners_bright_blur(corrected)
-        if not np.allclose(pts, _full_image_quad(corrected), atol=1):
-            return pts
-        pts = _auto_detect_document_corners_clahe_canny(corrected)
-        if not np.allclose(pts, _full_image_quad(corrected), atol=1):
-            return pts
-        mask = _mask_background_complex(corrected)
-        pts = _find_quad_from_contours(mask, corrected)
-        if not np.allclose(pts, _full_image_quad(corrected), atol=1):
-            return pts
-        return _auto_detect_document_corners_hough_improved(corrected)
-    elif brightness > 180:
-        return _auto_detect_document_corners_clahe_canny(corrected)
-    else:
-        pts = _auto_detect_document_corners_clahe_canny(corrected)
-        if np.allclose(pts, _full_image_quad(corrected), atol=1):
-            mask = _mask_background_complex(corrected)
-            pts = _find_quad_from_contours(mask, corrected)
-            if np.allclose(pts, _full_image_quad(corrected), atol=1):
-                 pts = _auto_detect_document_corners_hough_improved(corrected)
-                 if np.allclose(pts, _full_image_quad(corrected), atol=1):
-                     # Final fallback, consider increasing min_area_ratio for noisy images
-                     pts = _find_quad_from_contours(_mask_background_lab_range(corrected), corrected, min_area_ratio=0.1)
-        return pts
+    # Add full image quad as a fallback candidate if no valid candidates found
+    if not candidates:
+        candidates.append(_full_image_quad(image))
+
+    return candidates
+
+def select_best_quad(image: np.ndarray, candidates: List[np.ndarray]) -> np.ndarray:
+    best_quad = _full_image_quad(image)
+    best_score = -1
+
+    for quad in candidates:
+        score = _score_quad(image, quad)
+        if score > best_score:
+            best_score = score
+            best_quad = quad
+
+    return best_quad
+
 
 class PerspectiveTransformation(Component):
     def __init__(self, request, bootstrap):
@@ -350,19 +340,26 @@ class PerspectiveTransformation(Component):
             img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
         return img
 
+
     def run(self):
         img_obj = Image.get_frame(img=self.image, redis_db=self.redis_db)
         if img_obj is None or img_obj.value is None:
             raise ValueError("No input image provided or failed to load.")
 
         src_img = self._prepare_image(img_obj.value)
-        pts = auto_detect_document_corners_dynamic(src_img)
-        warped = _four_point_transform(src_img, pts)
+
+        # Detect candidate quads from different methods
+        candidates = detect_document_candidates(src_img)
+
+        # Select the best quad based on scoring
+        best_quad = select_best_quad(src_img, candidates)
+
+        warped = _four_point_transform(src_img, best_quad)
 
         img_obj.value = warped
         self.image = Image.set_frame(img=img_obj, package_uID=self.uID, redis_db=self.redis_db)
 
-        self.context["src_quad"] = pts.tolist()
+        self.context["src_quad"] = best_quad.tolist()
         self.context["output_size"] = [warped.shape[1], warped.shape[0]]
 
         return build_response(context=self)
