@@ -267,6 +267,26 @@ def _auto_detect_document_corners_color_segmentation(image: np.ndarray) -> np.nd
 
     return _find_quad_from_contours(morph, image)
 
+def _auto_detect_document_corners_inverse_threshold(image: np.ndarray) -> np.ndarray:
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    morph = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+    morph = cv2.morphologyEx(morph, cv2.MORPH_OPEN, kernel)
+    return _find_quad_from_contours(morph, image)
+
+def _auto_detect_document_corners_gradient_magnitude(image: np.ndarray) -> np.ndarray:
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    grad_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+    mag, angle = cv2.cartToPolar(grad_x, grad_y, angleInDegrees=True)
+    _, thresh = cv2.threshold(mag, 50, 255, cv2.THRESH_BINARY)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    morph = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+    morph = cv2.morphologyEx(morph, cv2.MORPH_OPEN, kernel)
+    return _find_quad_from_contours(morph, image)
+
 
 def _score_quad(image: np.ndarray, quad: np.ndarray) -> float:
     # Implement scoring logic based on heatmap and geometric properties
@@ -288,6 +308,8 @@ def detect_document_candidates(image: np.ndarray) -> List[np.ndarray]:
         "clahe_canny": _auto_detect_document_corners_clahe_canny,
         "mask_background_complex": lambda img: _find_quad_from_contours(_mask_background_complex(img), img),
         "hough_improved": _auto_detect_document_corners_hough_improved,
+        "inverse_threshold": _auto_detect_document_corners_inverse_threshold,
+        "gradient_magnitude": _auto_detect_document_corners_gradient_magnitude,
     }
 
     for name, func in variants.items():
