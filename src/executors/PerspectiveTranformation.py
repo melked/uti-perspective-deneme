@@ -325,9 +325,43 @@ def _auto_detect_document_corners_gradient_magnitude(image: np.ndarray) -> np.nd
     grad_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
     grad_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
     mag, angle = cv2.cartToPolar(grad_x, grad_y, angleInDegrees=True)
+    # Convert to 8-bit unsigned integer before thresholding and finding contours
+    mag = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     _, thresh = cv2.threshold(mag, 50, 255, cv2.THRESH_BINARY)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
     morph = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+    morph = cv2.morphologyEx(morph, cv2.MORPH_OPEN, kernel)
+    return _find_quad_from_contours(morph, image)
+
+def _auto_detect_document_corners_laplacian(image: np.ndarray) -> np.ndarray:
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+    laplacian = np.uint8(np.absolute(laplacian))
+    _, thresh = cv2.threshold(laplacian, 30, 255, cv2.THRESH_BINARY)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    morph = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+    morph = cv2.morphologyEx(morph, cv2.MORPH_OPEN, kernel)
+    return _find_quad_from_contours(morph, image)
+
+def _auto_detect_document_corners_morphological_gradient(image: np.ndarray) -> np.ndarray:
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    gradient = cv2.morphologyEx(gray, cv2.MORPH_GRADIENT, kernel)
+    _, thresh = cv2.threshold(gradient, 30, 255, cv2.THRESH_BINARY)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    morph = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+    morph = cv2.morphologyEx(morph, cv2.MORPH_OPEN, kernel)
+    return _find_quad_from_contours(morph, image)
+
+def _auto_detect_document_corners_combined_edges(image: np.ndarray) -> np.ndarray:
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    edges_canny = cv2.Canny(gray, 50, 150)
+    laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+    laplacian = np.uint8(np.absolute(laplacian))
+    _, edges_laplacian = cv2.threshold(laplacian, 30, 255, cv2.THRESH_BINARY)
+    combined_edges = cv2.bitwise_or(edges_canny, edges_laplacian)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    morph = cv2.morphologyEx(combined_edges, cv2.MORPH_CLOSE, kernel)
     morph = cv2.morphologyEx(morph, cv2.MORPH_OPEN, kernel)
     return _find_quad_from_contours(morph, image)
 
@@ -354,6 +388,9 @@ def detect_document_candidates(image: np.ndarray) -> List[np.ndarray]:
         "hough_improved": _auto_detect_document_corners_hough_improved,
         "inverse_threshold": _auto_detect_document_corners_inverse_threshold,
         "gradient_magnitude": _auto_detect_document_corners_gradient_magnitude,
+        "laplacian": _auto_detect_document_corners_laplacian,
+        "morphological_gradient": _auto_detect_document_corners_morphological_gradient,
+        "combined_edges": _auto_detect_document_corners_combined_edges,
     }
 
     for name, func in variants.items():
@@ -420,8 +457,10 @@ class PerspectiveTransformation(Component):
         # Select the best quad based on scoring
         best_quad = select_best_quad(src_img, candidates)
 
-        warped = _four_point_transform(src_img, best_quad)
+        # Apply perspective transform
+        warped = four_point_transform(src_img, best_quad)
 
+        # Update image object and context
         img_obj.value = warped
         self.image = Image.set_frame(img=img_obj, package_uID=self.uID, redis_db=self.redis_db)
 
