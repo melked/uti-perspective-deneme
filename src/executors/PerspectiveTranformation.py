@@ -293,12 +293,53 @@ def _score_quad(image: np.ndarray, quad: np.ndarray) -> float:
     # This is a placeholder and needs to be implemented
     return 1.0  # Placeholder score
 
+def _adaptive_contrast_enhancement(image: np.ndarray) -> np.ndarray:
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    L, A, B = cv2.split(lab)
 
+    mean_lum = np.mean(L)
+    clip_limit = 2.0 if mean_lum < 100 else 3.0
+    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8, 8))
+    cl = clahe.apply(L)
+
+    lab_clahe = cv2.merge((cl, A, B))
+    img_clahe = cv2.cvtColor(lab_clahe, cv2.COLOR_LAB2BGR)
+
+    # Gamma adaptif
+    mean_gray = np.mean(cv2.cvtColor(img_clahe, cv2.COLOR_BGR2GRAY))
+    if mean_gray < 80:
+        gamma = 1.8
+    elif mean_gray > 180:
+        gamma = 0.6
+    else:
+        gamma = 1.0
+
+    return _gamma_correction(img_clahe, gamma=gamma)
+def _preprocess_image_for_edges(image: np.ndarray) -> np.ndarray:
+    # Bilateral filtre ile gürültü azaltma, kenar koruma
+    bilateral = cv2.bilateralFilter(image, d=9, sigmaColor=75, sigmaSpace=75)
+    # CLAHE kontrast iyileştirme (L kanalında)
+    lab = cv2.cvtColor(bilateral, cv2.COLOR_BGR2LAB)
+    L, A, B = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    cl = clahe.apply(L)
+    lab_clahe = cv2.merge((cl, A, B))
+    img_clahe = cv2.cvtColor(lab_clahe, cv2.COLOR_LAB2BGR)
+    # Unsharp mask ile keskinlik arttırma
+    sharpened = _unsharp_mask(img_clahe)
+    return sharpened
+def _auto_canny(image: np.ndarray, sigma=0.33):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    v = np.median(gray)
+    lower = int(max(0, (1.0 - sigma) * v))
+    upper = int(min(255, (1.0 + sigma) * v))
+    edges = cv2.Canny(gray, lower, upper)
+    return edges
 def detect_document_candidates(image: np.ndarray) -> List[np.ndarray]:
     candidates = []
-    img_corrected = _auto_gamma_correction(image)
+    img_corrected = _adaptive_contrast_enhancement(image)
+    img_preprocessed = _preprocess_image_for_edges(img_corrected)
 
-    # Try different detection variants
     variants = {
         "lab_range": lambda img: _find_quad_from_contours(_mask_background_lab_range(img), img),
         "color_segmentation": _auto_detect_document_corners_color_segmentation,
@@ -310,22 +351,22 @@ def detect_document_candidates(image: np.ndarray) -> List[np.ndarray]:
         "hough_improved": _auto_detect_document_corners_hough_improved,
         "inverse_threshold": _auto_detect_document_corners_inverse_threshold,
         "gradient_magnitude": _auto_detect_document_corners_gradient_magnitude,
+        "advanced_edge_mask": lambda img: _find_quad_from_contours(_advanced_edge_mask(img), img_preprocessed)
     }
 
     for name, func in variants.items():
         try:
-            quad = func(img_corrected)
+            quad = func(img_preprocessed)
             if not np.allclose(quad, _full_image_quad(image), atol=1):
                 candidates.append(quad)
         except Exception as e:
             print(f"Error in {name} variant: {e}")
-            pass # Continue with other variants
 
-    # Add full image quad as a fallback candidate if no valid candidates found
     if not candidates:
         candidates.append(_full_image_quad(image))
 
     return candidates
+
 
 def select_best_quad(image: np.ndarray, candidates: List[np.ndarray]) -> np.ndarray:
     best_quad = _full_image_quad(image)
