@@ -326,8 +326,8 @@ def _auto_detect_document_corners_gradient_magnitude(image: np.ndarray) -> np.nd
     grad_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
     mag, angle = cv2.cartToPolar(grad_x, grad_y, angleInDegrees=True)
     # Convert to 8-bit unsigned integer before thresholding and finding contours
-    mag_uint8 = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-    _, thresh = cv2.threshold(mag_uint8, 50, 255, cv2.THRESH_BINARY)
+    mag = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    _, thresh = cv2.threshold(mag, 50, 255, cv2.THRESH_BINARY)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
     morph = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
     morph = cv2.morphologyEx(morph, cv2.MORPH_OPEN, kernel)
@@ -396,7 +396,7 @@ def detect_document_candidates(image: np.ndarray) -> List[np.ndarray]:
     for name, func in variants.items():
         try:
             quad = func(img_corrected)
-            if quad is not None and not np.allclose(quad, _full_image_quad(image), atol=1):
+            if not np.allclose(quad, _full_image_quad(image), atol=1):
                 candidates.append(quad)
         except Exception as e:
             print(f"Error in {name} variant: {e}")
