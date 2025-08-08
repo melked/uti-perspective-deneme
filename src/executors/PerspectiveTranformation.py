@@ -335,6 +335,24 @@ def _auto_canny(image: np.ndarray, sigma=0.33):
     edges = cv2.Canny(gray, lower, upper)
     return edges
 
+def _auto_detect_document_corners_dark_object(image: np.ndarray) -> np.ndarray:
+    # LAB renk uzayına dönüştür
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    L, A, B = cv2.split(lab)
+
+    # Koyu bölgeleri maskele (L kanalı düşük değerler)
+    _, dark_mask = cv2.threshold(L, 80, 255, cv2.THRESH_BINARY_INV)
+
+    # Kenar tespit (Canny)
+    edges = cv2.Canny(dark_mask, 50, 150)
+
+    # Morfolojik kapanma ile boşlukları kapat
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+    # En büyük 4 kenarlı konturu bul
+    return _find_quad_from_contours(closed, image)
+
 def detect_document_candidates(image: np.ndarray) -> List[np.ndarray]:
     candidates = []
     img_corrected = _adaptive_contrast_enhancement(image)
@@ -351,7 +369,7 @@ def detect_document_candidates(image: np.ndarray) -> List[np.ndarray]:
         "hough_improved": _auto_detect_document_corners_hough_improved,
         "inverse_threshold": _auto_detect_document_corners_inverse_threshold,
         "gradient_magnitude": _auto_detect_document_corners_gradient_magnitude,
-        "advanced_edge_mask": lambda img: _find_quad_from_contours(_advanced_edge_mask(img), img_preprocessed)
+        "dark_object": _auto_detect_document_corners_dark_object
     }
 
     for name, func in variants.items():
