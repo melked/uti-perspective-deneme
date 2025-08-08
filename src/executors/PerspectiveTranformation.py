@@ -15,6 +15,11 @@ from components.PerspectiveTransformation.src.models.PackageModel import Package
 
 
 def _order_points(pts: np.ndarray) -> np.ndarray:
+    pts = np.asarray(pts)
+    if pts is None:
+        raise ValueError("order_points: pts is None")
+    if pts.size == 0:
+        raise ValueError("order_points: pts is empty")
     pts = pts.reshape(4, 2)
     rect = np.zeros((4, 2), dtype=np.float32)
     s = pts.sum(axis=1)
@@ -38,6 +43,10 @@ def _four_point_transform(image: np.ndarray, pts: np.ndarray) -> np.ndarray:
     heightB = np.linalg.norm(tl - bl)
     maxHeight = int(round(max(heightA, heightB)))
 
+    # prevent zero dimension
+    maxWidth = max(1, maxWidth)
+    maxHeight = max(1, maxHeight)
+
     dst = np.array([
         [0, 0],
         [maxWidth - 1, 0],
@@ -56,22 +65,59 @@ def _full_image_quad(image: np.ndarray) -> np.ndarray:
 
 
 def _find_quad_from_contours(binary_img: np.ndarray, ref_image: np.ndarray, min_area_ratio=0.05) -> np.ndarray:
-    contours, _ = cv2.findContours(binary_img, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    """
+    Güvenli findContours wrapper:
+    - OpenCV 3 ve 4 dönüş formatlarına dayanıklı
+    - Konturlar yoksa tüm resmi döndürür
+    - Bulunan konturlardan ilk uygun 4-köşe poligonu döner
+    """
+    if binary_img is None:
+        return _full_image_quad(ref_image)
+
+    # ensure binary_img is single channel uint8
+    if binary_img.dtype != np.uint8:
+        binary_img = binary_img.astype(np.uint8)
+    if binary_img.ndim == 3:
+        binary_img = cv2.cvtColor(binary_img, cv2.COLOR_BGR2GRAY)
+
+    contours_data = cv2.findContours(binary_img, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    # contours_data can be (contours, hierarchy) or (image, contours, hierarchy)
+    if len(contours_data) == 2:
+        contours, hierarchy = contours_data
+    elif len(contours_data) == 3:
+        _, contours, hierarchy = contours_data
+    else:
+        contours = []
+
+    if not contours:
+        return _full_image_quad(ref_image)
+
+    contours = [c for c in contours if isinstance(c, (np.ndarray, list)) and len(c) > 0]
     if not contours:
         return _full_image_quad(ref_image)
 
     contours = sorted(contours, key=cv2.contourArea, reverse=True)
-    img_area = ref_image.shape[0] * ref_image.shape[1]
-    min_area = img_area * min_area_ratio
+    img_area = float(ref_image.shape[0]) * float(ref_image.shape[1])
+    min_area = img_area * float(min_area_ratio)
 
     for c in contours:
-        area = cv2.contourArea(c)
+        try:
+            area = float(cv2.contourArea(c))
+        except Exception:
+            continue
         if area < min_area:
             continue
         peri = cv2.arcLength(c, True)
         approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-        if len(approx) == 4 and cv2.isContourConvex(approx):
-            return approx.reshape(4, 2).astype(np.float32)
+        # ensure approx is numpy array
+        approx = np.asarray(approx)
+        if approx is None or approx.size == 0:
+            continue
+        if len(approx) == 4:
+            # flatten shape if needed
+            a = approx.reshape(4, 2).astype(np.float32)
+            if cv2.isContourConvex(a.astype(np.int32)):
+                return a
     return _full_image_quad(ref_image)
 
 
@@ -199,7 +245,10 @@ def _filter_lines_by_angle(lines, angle_tol=10):
         return None
     filtered = []
     for line in lines:
-        x1, y1, x2, y2 = line[0]
+        try:
+            x1, y1, x2, y2 = line[0]
+        except Exception:
+            continue
         angle = np.degrees(np.arctan2(y2 - y1, x2 - x1)) % 180
         if (abs(angle - 0) < angle_tol) or (abs(angle - 90) < angle_tol) or (abs(angle - 180) < angle_tol):
             filtered.append(line)
@@ -224,9 +273,10 @@ def _auto_detect_document_corners_hough_improved(image: np.ndarray) -> np.ndarra
 def _texture_mask_gabor(image: np.ndarray, ksize=31, sigma=4.0, theta=np.pi/4, lambd=10.0, gamma=0.5) -> np.ndarray:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     g_kernel = cv2.getGaborKernel((ksize, ksize), sigma, theta, lambd, gamma, 0, ktype=cv2.CV_32F)
-    filtered = cv2.filter2D(gray, cv2.CV_8UC3, g_kernel)
+    filtered = cv2.filter2D(gray, cv2.CV_8U, g_kernel)
     _, mask = cv2.threshold(filtered, 50, 255, cv2.THRESH_BINARY)
     return mask
+
 
 def _auto_detect_document_corners_lab_adaptive(image: np.ndarray) -> np.ndarray:
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
@@ -260,12 +310,12 @@ def _auto_detect_document_corners_color_segmentation(image: np.ndarray) -> np.nd
     upper_light = np.array([180, 30, 255])
     mask_light = cv2.inRange(hsv, lower_light, upper_light)
 
-
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
     morph = cv2.morphologyEx(mask_light, cv2.MORPH_CLOSE, kernel)
     morph = cv2.morphologyEx(morph, cv2.MORPH_OPEN, kernel)
 
     return _find_quad_from_contours(morph, image)
+
 
 def _auto_detect_document_corners_inverse_threshold(image: np.ndarray) -> np.ndarray:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -276,12 +326,15 @@ def _auto_detect_document_corners_inverse_threshold(image: np.ndarray) -> np.nda
     morph = cv2.morphologyEx(morph, cv2.MORPH_OPEN, kernel)
     return _find_quad_from_contours(morph, image)
 
+
 def _auto_detect_document_corners_gradient_magnitude(image: np.ndarray) -> np.ndarray:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     grad_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
     grad_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
     mag, angle = cv2.cartToPolar(grad_x, grad_y, angleInDegrees=True)
-    _, thresh = cv2.threshold(mag, 50, 255, cv2.THRESH_BINARY)
+    # mag is float32; threshold must have same dtype
+    mag_u8 = cv2.convertScaleAbs(mag)
+    _, thresh = cv2.threshold(mag_u8, 50, 255, cv2.THRESH_BINARY)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
     morph = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
     morph = cv2.morphologyEx(morph, cv2.MORPH_OPEN, kernel)
@@ -289,9 +342,35 @@ def _auto_detect_document_corners_gradient_magnitude(image: np.ndarray) -> np.nd
 
 
 def _score_quad(image: np.ndarray, quad: np.ndarray) -> float:
-    # Implement scoring logic based on heatmap and geometric properties
-    # This is a placeholder and needs to be implemented
-    return 1.0  # Placeholder score
+    # Basit scoring: alanına göre, merkezin görüntü merkezine uzaklığına göre ve
+    # kenar yoğunluğuna göre puan veriyoruz.
+    try:
+        quad = np.asarray(quad, dtype=np.float32)
+        if quad.size == 0:
+            return -1.0
+        # area (shoelace)
+        x = quad[:, 0]
+        y = quad[:, 1]
+        area = 0.5 * np.abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1)))
+        # merkez uzaklığı
+        cx = np.mean(x)
+        cy = np.mean(y)
+        h, w = image.shape[:2]
+        img_cx, img_cy = w / 2.0, h / 2.0
+        dist = np.hypot(cx - img_cx, cy - img_cy)
+        max_dist = np.hypot(img_cx, img_cy)
+        # kenar yoğunluğu: Canny ile ölç
+        warped = _four_point_transform(image, quad)
+        gray_w = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
+        edges = cv2.Canny(gray_w, 50, 150)
+        edge_density = float(np.sum(edges > 0)) / (warped.shape[0] * warped.shape[1] + 1e-9)
+
+        # normalize and combine (area positive, smaller dist better, higher edge_density better)
+        score = (area / (w * h + 1e-9)) * 0.6 + (1.0 - dist / (max_dist + 1e-9)) * 0.3 + edge_density * 0.1
+        return float(score)
+    except Exception:
+        return -1.0
+
 
 def _adaptive_contrast_enhancement(image: np.ndarray) -> np.ndarray:
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
@@ -315,6 +394,8 @@ def _adaptive_contrast_enhancement(image: np.ndarray) -> np.ndarray:
         gamma = 1.0
 
     return _gamma_correction(img_clahe, gamma=gamma)
+
+
 def _preprocess_image_for_edges(image: np.ndarray) -> np.ndarray:
     # Bilateral filtre ile gürültü azaltma, kenar koruma
     bilateral = cv2.bilateralFilter(image, d=9, sigmaColor=75, sigmaSpace=75)
@@ -328,6 +409,8 @@ def _preprocess_image_for_edges(image: np.ndarray) -> np.ndarray:
     # Unsharp mask ile keskinlik arttırma
     sharpened = _unsharp_mask(img_clahe)
     return sharpened
+
+
 def _auto_canny(image: np.ndarray, sigma=0.33):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     v = np.median(gray)
@@ -335,9 +418,62 @@ def _auto_canny(image: np.ndarray, sigma=0.33):
     upper = int(min(255, (1.0 + sigma) * v))
     edges = cv2.Canny(gray, lower, upper)
     return edges
+
+
+# --------- Yeni ek: koyu arka plan için güçlendirme ve maske ----------
+def _mask_dark_background(image: np.ndarray) -> np.ndarray:
+    """LAB ve HSV kombinasyonu ile koyu arka planlarda belgeyi ayırmaya çalışır."""
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    L, A, B = cv2.split(lab)
+    # L'de daha parlak bölgeleri seç
+    _, light_mask = cv2.threshold(L, 60, 255, cv2.THRESH_BINARY)
+
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    _, _, v = cv2.split(hsv)
+    _, not_dark_mask = cv2.threshold(v, 40, 255, cv2.THRESH_BINARY)
+
+    combined_mask = cv2.bitwise_and(light_mask, not_dark_mask)
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
+    combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, kernel, iterations=1)
+    return combined_mask
+
+
+def _auto_detect_document_corners_dark_boost(image: np.ndarray) -> np.ndarray:
+    """Koyu görüntüler için özel maske + kontur tabanlı tespit."""
+    mask = _mask_dark_background(image)
+    return _find_quad_from_contours(mask, image)
+
+
+def _boost_dark_regions(image: np.ndarray) -> np.ndarray:
+    """Düşük parlaklıktaki görüntüleri daha agresif CLAHE + gamma ile güçlendirir."""
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    if np.mean(gray) < 90:
+        lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+        L, A, B = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=3.5, tileGridSize=(8, 8))
+        L = clahe.apply(L)
+        merged = cv2.merge((L, A, B))
+        boosted = cv2.cvtColor(merged, cv2.COLOR_LAB2BGR)
+        boosted = _gamma_correction(boosted, gamma=2.0)
+        return boosted
+    return image
+
+
+# --------- Ana candidate detection (koyu entegrasyonu ile) ----------
 def detect_document_candidates(image: np.ndarray) -> List[np.ndarray]:
-    candidates = []
+    """
+    Mevcut pipeline'ı bozmadan çalışır; koyu görüntülerde önce boost uygulayıp
+    tüm metotları preprocessed görüntü üzerinde dener. Dönen candidate'lar
+    numpy array listesi şeklindedir.
+    """
+    candidates: List[np.ndarray] = []
     img_corrected = _adaptive_contrast_enhancement(image)
+    # koyu görüntülerde güçlendir
+    if np.mean(cv2.cvtColor(img_corrected, cv2.COLOR_BGR2GRAY)) < 90:
+        img_corrected = _boost_dark_regions(img_corrected)
+
     img_preprocessed = _preprocess_image_for_edges(img_corrected)
 
     variants = {
@@ -351,14 +487,34 @@ def detect_document_candidates(image: np.ndarray) -> List[np.ndarray]:
         "hough_improved": _auto_detect_document_corners_hough_improved,
         "inverse_threshold": _auto_detect_document_corners_inverse_threshold,
         "gradient_magnitude": _auto_detect_document_corners_gradient_magnitude,
-        "advanced_edge_mask": lambda img: _find_quad_from_contours(_advanced_edge_mask(img), img_preprocessed)
+        "dark_boost": _auto_detect_document_corners_dark_boost
     }
 
     for name, func in variants.items():
         try:
-            quad = func(img_preprocessed)
-            if not np.allclose(quad, _full_image_quad(image), atol=1):
-                candidates.append(quad)
+            # bazı fonksiyonlar ham image, bazıları preprocessed bekliyor; burada preprocessed veriyoruz
+            quad = func(img_preprocessed) if callable(func) else None
+            # güvenlik: tuple veya diğer tipleri ayıkla
+            if isinstance(quad, tuple):
+                # eğer (arr, ...) biçimindeyse ilk elemanı al
+                quad = quad[0] if len(quad) > 0 else None
+            if quad is None:
+                continue
+            quad = np.asarray(quad, dtype=np.float32)
+            # eğer quad tüm görüntü ise atla (gerekiyorsa include etme)
+            if quad.size == 0:
+                continue
+            try:
+                full = _full_image_quad(image)
+                if np.allclose(quad, full, atol=1):
+                    continue
+            except Exception:
+                pass
+            # reshape güvenliği: eğer 4x2 değil ise atla
+            if quad.size == 8:
+                quad = quad.reshape(4, 2)
+            if quad.shape == (4, 2):
+                candidates.append(quad.astype(np.float32))
         except Exception as e:
             print(f"Error in {name} variant: {e}")
 
@@ -370,13 +526,16 @@ def detect_document_candidates(image: np.ndarray) -> List[np.ndarray]:
 
 def select_best_quad(image: np.ndarray, candidates: List[np.ndarray]) -> np.ndarray:
     best_quad = _full_image_quad(image)
-    best_score = -1
+    best_score = -1.0
 
     for quad in candidates:
-        score = _score_quad(image, quad)
-        if score > best_score:
-            best_score = score
-            best_quad = quad
+        try:
+            score = _score_quad(image, quad)
+            if score > best_score:
+                best_score = score
+                best_quad = quad
+        except Exception:
+            continue
 
     return best_quad
 
