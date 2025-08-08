@@ -14,84 +14,40 @@ from components.PerspectiveTransformation.src.utils.response import build_respon
 from components.PerspectiveTransformation.src.models.PackageModel import PackageModel
 
 
-def auto_detect_document_corners(image: np.ndarray) -> Optional[np.ndarray]:
-    # Ön işleme
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    gray = clahe.apply(gray)
-    gray = cv2.GaussianBlur(gray, (5, 5), 0)
-
-    # Kenar algılama
-    edges = cv2.Canny(gray, 50, 150)
-
-    # Çizgi tespiti
-    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=80, minLineLength=50, maxLineGap=10)
-    if lines is None:
-        return None
-
-    # Çizgi çizimi
-    line_img = np.zeros_like(image)
-    for line in lines:
-        x1, y1, x2, y2 = line[0]
-        cv2.line(line_img, (x1, y1), (x2, y2), (255, 255, 255), 2)
-
-    # Kontur bulma
-    gray_lines = cv2.cvtColor(line_img, cv2.COLOR_BGR2GRAY)
-    contours, _ = cv2.findContours(gray_lines, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
-        return None
-
-    # En büyük dörtgeni bul
-    max_area = 0
-    best_cnt = None
-    for cnt in contours:
-        epsilon = 0.02 * cv2.arcLength(cnt, True)
-        approx = cv2.approxPolyDP(cnt, epsilon, True)
-        if len(approx) == 4:
-            area = cv2.contourArea(approx)
-            if area > max_area:
-                max_area = area
-                best_cnt = approx
-
-    if best_cnt is None:
-        return None
-
-    # Noktaları sırala
-    pts = best_cnt.reshape(4, 2)
-    return order_points(pts)
-
-
-def order_points(pts: np.ndarray) -> np.ndarray:
-    rect = np.zeros((4, 2), dtype="float32")
+def _order_points(pts: np.ndarray) -> np.ndarray:
+    pts = pts.reshape(4, 2)
+    rect = np.zeros((4, 2), dtype=np.float32)
     s = pts.sum(axis=1)
     diff = np.diff(pts, axis=1)
-    rect[0] = pts[np.argmin(s)]      # top-left
-    rect[2] = pts[np.argmax(s)]      # bottom-right
-    rect[1] = pts[np.argmin(diff)]   # top-right
-    rect[3] = pts[np.argmax(diff)]   # bottom-left
+    rect[0] = pts[np.argmin(s)]
+    rect[2] = pts[np.argmax(s)]
+    rect[1] = pts[np.argmin(diff)]
+    rect[3] = pts[np.argmax(diff)]
     return rect
 
 
-def four_point_transform(image: np.ndarray, pts: np.ndarray) -> np.ndarray:
-    (tl, tr, br, bl) = pts
+def _four_point_transform(image: np.ndarray, pts: np.ndarray) -> np.ndarray:
+    rect = _order_points(pts)
+    (tl, tr, br, bl) = rect
+
     widthA = np.linalg.norm(br - bl)
     widthB = np.linalg.norm(tr - tl)
-    maxWidth = int(max(widthA, widthB))
+    maxWidth = int(round(max(widthA, widthB)))
 
     heightA = np.linalg.norm(tr - br)
     heightB = np.linalg.norm(tl - bl)
-    maxHeight = int(max(heightA, heightB))
+    maxHeight = int(round(max(heightA, heightB)))
 
     dst = np.array([
         [0, 0],
         [maxWidth - 1, 0],
         [maxWidth - 1, maxHeight - 1],
-        [0, maxHeight - 1]], dtype="float32")
+        [0, maxHeight - 1]
+    ], dtype=np.float32)
 
-    M = cv2.getPerspectiveTransform(pts, dst)
-    warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight))
+    M = cv2.getPerspectiveTransform(rect, dst)
+    warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight), flags=cv2.INTER_LANCZOS4)
     return warped
-
 
 
 def _full_image_quad(image: np.ndarray) -> np.ndarray:
@@ -325,43 +281,9 @@ def _auto_detect_document_corners_gradient_magnitude(image: np.ndarray) -> np.nd
     grad_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
     grad_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
     mag, angle = cv2.cartToPolar(grad_x, grad_y, angleInDegrees=True)
-    # Convert to 8-bit unsigned integer before thresholding and finding contours
-    mag = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     _, thresh = cv2.threshold(mag, 50, 255, cv2.THRESH_BINARY)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
     morph = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
-    morph = cv2.morphologyEx(morph, cv2.MORPH_OPEN, kernel)
-    return _find_quad_from_contours(morph, image)
-
-def _auto_detect_document_corners_laplacian(image: np.ndarray) -> np.ndarray:
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    laplacian = cv2.Laplacian(gray, cv2.CV_64F)
-    laplacian = np.uint8(np.absolute(laplacian))
-    _, thresh = cv2.threshold(laplacian, 30, 255, cv2.THRESH_BINARY)
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-    morph = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
-    morph = cv2.morphologyEx(morph, cv2.MORPH_OPEN, kernel)
-    return _find_quad_from_contours(morph, image)
-
-def _auto_detect_document_corners_morphological_gradient(image: np.ndarray) -> np.ndarray:
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-    gradient = cv2.morphologyEx(gray, cv2.MORPH_GRADIENT, kernel)
-    _, thresh = cv2.threshold(gradient, 30, 255, cv2.THRESH_BINARY)
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-    morph = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
-    morph = cv2.morphologyEx(morph, cv2.MORPH_OPEN, kernel)
-    return _find_quad_from_contours(morph, image)
-
-def _auto_detect_document_corners_combined_edges(image: np.ndarray) -> np.ndarray:
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    edges_canny = cv2.Canny(gray, 50, 150)
-    laplacian = cv2.Laplacian(gray, cv2.CV_64F)
-    laplacian = np.uint8(np.absolute(laplacian))
-    _, edges_laplacian = cv2.threshold(laplacian, 30, 255, cv2.THRESH_BINARY)
-    combined_edges = cv2.bitwise_or(edges_canny, edges_laplacian)
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-    morph = cv2.morphologyEx(combined_edges, cv2.MORPH_CLOSE, kernel)
     morph = cv2.morphologyEx(morph, cv2.MORPH_OPEN, kernel)
     return _find_quad_from_contours(morph, image)
 
@@ -370,13 +292,54 @@ def _score_quad(image: np.ndarray, quad: np.ndarray) -> float:
     # Implement scoring logic based on heatmap and geometric properties
     # This is a placeholder and needs to be implemented
     return 1.0  # Placeholder score
+def _adaptive_contrast_enhancement(image: np.ndarray) -> np.ndarray:
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    L, A, B = cv2.split(lab)
 
+    mean_lum = np.mean(L)
+    clip_limit = 2.0 if mean_lum < 100 else 3.0
+    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8, 8))
+    cl = clahe.apply(L)
+
+    lab_clahe = cv2.merge((cl, A, B))
+    img_clahe = cv2.cvtColor(lab_clahe, cv2.COLOR_LAB2BGR)
+
+    # Gamma adaptif
+    mean_gray = np.mean(cv2.cvtColor(img_clahe, cv2.COLOR_BGR2GRAY))
+    if mean_gray < 80:
+        gamma = 1.8
+    elif mean_gray > 180:
+        gamma = 0.6
+    else:
+        gamma = 1.0
+
+    return _gamma_correction(img_clahe, gamma=gamma)
+def _preprocess_image_for_edges(image: np.ndarray) -> np.ndarray:
+    # Bilateral filtre ile gürültü azaltma, kenar koruma
+    bilateral = cv2.bilateralFilter(image, d=9, sigmaColor=75, sigmaSpace=75)
+    # CLAHE kontrast iyileştirme (L kanalında)
+    lab = cv2.cvtColor(bilateral, cv2.COLOR_BGR2LAB)
+    L, A, B = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    cl = clahe.apply(L)
+    lab_clahe = cv2.merge((cl, A, B))
+    img_clahe = cv2.cvtColor(lab_clahe, cv2.COLOR_LAB2BGR)
+    # Unsharp mask ile keskinlik arttırma
+    sharpened = _unsharp_mask(img_clahe)
+    return sharpened
+def _auto_canny(image: np.ndarray, sigma=0.33):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    v = np.median(gray)
+    lower = int(max(0, (1.0 - sigma) * v))
+    upper = int(min(255, (1.0 + sigma) * v))
+    edges = cv2.Canny(gray, lower, upper)
+    return edges
 
 def detect_document_candidates(image: np.ndarray) -> List[np.ndarray]:
     candidates = []
-    img_corrected = _auto_gamma_correction(image)
+    img_corrected = _adaptive_contrast_enhancement(image)
+    img_preprocessed = _preprocess_image_for_edges(img_corrected)
 
-    # Try different detection variants
     variants = {
         "lab_range": lambda img: _find_quad_from_contours(_mask_background_lab_range(img), img),
         "color_segmentation": _auto_detect_document_corners_color_segmentation,
@@ -388,25 +351,22 @@ def detect_document_candidates(image: np.ndarray) -> List[np.ndarray]:
         "hough_improved": _auto_detect_document_corners_hough_improved,
         "inverse_threshold": _auto_detect_document_corners_inverse_threshold,
         "gradient_magnitude": _auto_detect_document_corners_gradient_magnitude,
-        "laplacian": _auto_detect_document_corners_laplacian,
-        "morphological_gradient": _auto_detect_document_corners_morphological_gradient,
-        "combined_edges": _auto_detect_document_corners_combined_edges,
+        "advanced_edge_mask": lambda img: _find_quad_from_contours(_advanced_edge_mask(img), img_preprocessed)
     }
 
     for name, func in variants.items():
         try:
-            quad = func(img_corrected)
+            quad = func(img_preprocessed)
             if not np.allclose(quad, _full_image_quad(image), atol=1):
                 candidates.append(quad)
         except Exception as e:
             print(f"Error in {name} variant: {e}")
-            pass # Continue with other variants
 
-    # Add full image quad as a fallback candidate if no valid candidates found
     if not candidates:
         candidates.append(_full_image_quad(image))
 
     return candidates
+
 
 def select_best_quad(image: np.ndarray, candidates: List[np.ndarray]) -> np.ndarray:
     best_quad = _full_image_quad(image)
@@ -457,10 +417,8 @@ class PerspectiveTransformation(Component):
         # Select the best quad based on scoring
         best_quad = select_best_quad(src_img, candidates)
 
-        # Apply perspective transform
-        warped = four_point_transform(src_img, best_quad)
+        warped = _four_point_transform(src_img, best_quad)
 
-        # Update image object and context
         img_obj.value = warped
         self.image = Image.set_frame(img=img_obj, package_uID=self.uID, redis_db=self.redis_db)
 
