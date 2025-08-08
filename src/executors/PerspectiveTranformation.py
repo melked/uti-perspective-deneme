@@ -293,48 +293,12 @@ def _score_quad(image: np.ndarray, quad: np.ndarray) -> float:
     # This is a placeholder and needs to be implemented
     return 1.0  # Placeholder score
 
-def _adaptive_contrast_enhancement(image: np.ndarray) -> np.ndarray:
-    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
-    L, A, B = cv2.split(lab)
 
-    mean_lum = np.mean(L)
-    clip_limit = 2.0 if mean_lum < 100 else 3.0
-    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8, 8))
-    cl = clahe.apply(L)
+def _gamma_correction(image: np.ndarray, gamma: float) -> np.ndarray:
+    inv_gamma = 1.0 / gamma
+    table = (np.array([((i / 255.0) ** inv_gamma) * 255 for i in np.arange(256)])).astype("uint8")
+    return cv2.LUT(image, table)
 
-    lab_clahe = cv2.merge((cl, A, B))
-    img_clahe = cv2.cvtColor(lab_clahe, cv2.COLOR_LAB2BGR)
-
-    # Gamma adaptif
-    mean_gray = np.mean(cv2.cvtColor(img_clahe, cv2.COLOR_BGR2GRAY))
-    if mean_gray < 80:
-        gamma = 1.8
-    elif mean_gray > 180:
-        gamma = 0.6
-    else:
-        gamma = 1.0
-
-    return _gamma_correction(img_clahe, gamma=gamma)
-def _preprocess_image_for_edges(image: np.ndarray) -> np.ndarray:
-    # Bilateral filtre ile gürültü azaltma, kenar koruma
-    bilateral = cv2.bilateralFilter(image, d=9, sigmaColor=75, sigmaSpace=75)
-    # CLAHE kontrast iyileştirme (L kanalında)
-    lab = cv2.cvtColor(bilateral, cv2.COLOR_BGR2LAB)
-    L, A, B = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    cl = clahe.apply(L)
-    lab_clahe = cv2.merge((cl, A, B))
-    img_clahe = cv2.cvtColor(lab_clahe, cv2.COLOR_LAB2BGR)
-    # Unsharp mask ile keskinlik arttırma
-    sharpened = _unsharp_mask(img_clahe)
-    return sharpened
-def _auto_canny(image: np.ndarray, sigma=0.33):
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    v = np.median(gray)
-    lower = int(max(0, (1.0 - sigma) * v))
-    upper = int(min(255, (1.0 + sigma) * v))
-    edges = cv2.Canny(gray, lower, upper)
-    return edges
 # --- Koyu arka plan maskesi ---
 def _mask_dark_background(image: np.ndarray) -> np.ndarray:
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
@@ -352,15 +316,16 @@ def _mask_dark_background(image: np.ndarray) -> np.ndarray:
     combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, kernel, iterations=1)
     return combined_mask
 
-# --- Koyu arka plan belge tespiti ---
+# --- Koyu belgelerde köşe tespiti ---
 def _auto_detect_document_corners_dark_boost(image: np.ndarray) -> np.ndarray:
     mask = _mask_dark_background(image)
-    return _find_quad_from_contours(mask, image)
+    quad = _find_quad_from_contours(mask, image)
+    return quad
 
 # --- Koyu bölgeleri güçlendirme ---
 def _boost_dark_regions(image: np.ndarray) -> np.ndarray:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    if np.mean(gray) < 90:
+    if np.mean(gray) < 90:  # düşük parlaklık eşiği
         lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
         L, A, B = cv2.split(lab)
         clahe = cv2.createCLAHE(clipLimit=3.5, tileGridSize=(8, 8))
@@ -371,14 +336,16 @@ def _boost_dark_regions(image: np.ndarray) -> np.ndarray:
         return boosted
     return image
 
-# --- Ana fonksiyon (koyu renk entegrasyonu) ---
+# --- Ana belge tespit fonksiyonu ---
 def detect_document_candidates(image: np.ndarray):
+    # Önce adaptif kontrast iyileştirme (mevcut fonksiyonun)
     img_corrected = _adaptive_contrast_enhancement(image)
 
-    # Sadece koyu belgelerde ek iyileştirme
+    # Koyu belgelerde ek güçlendirme
     if np.mean(cv2.cvtColor(img_corrected, cv2.COLOR_BGR2GRAY)) < 90:
         img_corrected = _boost_dark_regions(img_corrected)
 
+    # Tüm yöntemler
     variants = {
         "lab_range": lambda img: _find_quad_from_contours(_mask_background_lab_range(img), img),
         "color_segmentation": _auto_detect_document_corners_color_segmentation,
@@ -390,21 +357,21 @@ def detect_document_candidates(image: np.ndarray):
         "hough_improved": _auto_detect_document_corners_hough_improved,
         "inverse_threshold": _auto_detect_document_corners_inverse_threshold,
         "gradient_magnitude": _auto_detect_document_corners_gradient_magnitude,
-        "dark_boost": _auto_detect_document_corners_dark_boost  # sadece koyu belgelerde çalışacak
+        "dark_boost": _auto_detect_document_corners_dark_boost
     }
 
     candidates = []
     for name, method in variants.items():
         try:
             quad = method(img_corrected)
-            if quad is not None:
+            if isinstance(quad, tuple):  # tuple dönerse sadece ilk eleman alınır
+                quad = quad[0]
+            if quad is not None and hasattr(quad, "reshape"):
                 candidates.append((name, quad))
         except Exception as e:
             print(f"[WARN] {name} yöntemi hata verdi: {e}")
 
     return candidates
-
-
 def select_best_quad(image: np.ndarray, candidates: List[np.ndarray]) -> np.ndarray:
     best_quad = _full_image_quad(image)
     best_score = -1
