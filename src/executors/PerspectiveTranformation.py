@@ -335,56 +335,10 @@ def _auto_canny(image: np.ndarray, sigma=0.33):
     upper = int(min(255, (1.0 + sigma) * v))
     edges = cv2.Canny(gray, lower, upper)
     return edges
-
-def _mask_dark_background(image: np.ndarray) -> np.ndarray:
-    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
-    L, A, B = cv2.split(lab)
-
-    # L kanalında parlak alan maskeleme (belge genelde daha aydınlık)
-    _, light_mask = cv2.threshold(L, 60, 255, cv2.THRESH_BINARY)
-
-    # HSV ile çok koyu alanları maskeleme
-    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    _, _, v = cv2.split(hsv)
-    _, not_dark_mask = cv2.threshold(v, 40, 255, cv2.THRESH_BINARY)
-
-    combined_mask = cv2.bitwise_and(light_mask, not_dark_mask)
-
-    # Morfolojik iyileştirme
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
-    combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
-    combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, kernel, iterations=1)
-
-    return combined_mask
-
-
-# -----------------------------
-# 2. Koyu Arka Plan Belge Tespiti
-# -----------------------------
-def _auto_detect_document_corners_dark_boost(image: np.ndarray) -> np.ndarray:
-    mask = _mask_dark_background(image)
-    return _find_quad_from_contours(mask, image)
-
-
-# -----------------------------
-# 3. Koyu Bölgeleri Güçlendirme
-# -----------------------------
-def _boost_dark_regions(image: np.ndarray) -> np.ndarray:
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    if np.mean(gray) < 90:  # Karanlık görüntü
-        lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
-        L, A, B = cv2.split(lab)
-        clahe = cv2.createCLAHE(clipLimit=3.5, tileGridSize=(8, 8))
-        L = clahe.apply(L)
-        merged = cv2.merge((L, A, B))
-        boosted = cv2.cvtColor(merged, cv2.COLOR_LAB2BGR)
-        boosted = _gamma_correction(boosted, gamma=2.0)
-        return boosted
-    return image
-
-def detect_document_candidates(image: np.ndarray):
+def detect_document_candidates(image: np.ndarray) -> List[np.ndarray]:
+    candidates = []
     img_corrected = _adaptive_contrast_enhancement(image)
-    img_corrected = _boost_dark_regions(img_corrected)  # koyu bölgeler güçlendirildi
+    img_preprocessed = _preprocess_image_for_edges(img_corrected)
 
     variants = {
         "lab_range": lambda img: _find_quad_from_contours(_mask_background_lab_range(img), img),
@@ -397,17 +351,19 @@ def detect_document_candidates(image: np.ndarray):
         "hough_improved": _auto_detect_document_corners_hough_improved,
         "inverse_threshold": _auto_detect_document_corners_inverse_threshold,
         "gradient_magnitude": _auto_detect_document_corners_gradient_magnitude,
-        "dark_boost": _auto_detect_document_corners_dark_boost  # Yeni ek
+        "advanced_edge_mask": lambda img: _find_quad_from_contours(_advanced_edge_mask(img), img_preprocessed)
     }
 
-    candidates = []
-    for name, method in variants.items():
+    for name, func in variants.items():
         try:
-            quad = method(img_corrected)
-            if quad is not None:
-                candidates.append((name, quad))
+            quad = func(img_preprocessed)
+            if not np.allclose(quad, _full_image_quad(image), atol=1):
+                candidates.append(quad)
         except Exception as e:
-            print(f"[WARN] {name} yöntemi hata verdi: {e}")
+            print(f"Error in {name} variant: {e}")
+
+    if not candidates:
+        candidates.append(_full_image_quad(image))
 
     return candidates
 
