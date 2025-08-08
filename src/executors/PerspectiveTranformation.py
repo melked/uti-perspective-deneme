@@ -14,40 +14,84 @@ from components.PerspectiveTransformation.src.utils.response import build_respon
 from components.PerspectiveTransformation.src.models.PackageModel import PackageModel
 
 
-def _order_points(pts: np.ndarray) -> np.ndarray:
-    pts = pts.reshape(4, 2)
-    rect = np.zeros((4, 2), dtype=np.float32)
+def auto_detect_document_corners(image: np.ndarray) -> Optional[np.ndarray]:
+    # Ön işleme
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    gray = clahe.apply(gray)
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)
+
+    # Kenar algılama
+    edges = cv2.Canny(gray, 50, 150)
+
+    # Çizgi tespiti
+    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=80, minLineLength=50, maxLineGap=10)
+    if lines is None:
+        return None
+
+    # Çizgi çizimi
+    line_img = np.zeros_like(image)
+    for line in lines:
+        x1, y1, x2, y2 = line[0]
+        cv2.line(line_img, (x1, y1), (x2, y2), (255, 255, 255), 2)
+
+    # Kontur bulma
+    gray_lines = cv2.cvtColor(line_img, cv2.COLOR_BGR2GRAY)
+    contours, _ = cv2.findContours(gray_lines, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+
+    # En büyük dörtgeni bul
+    max_area = 0
+    best_cnt = None
+    for cnt in contours:
+        epsilon = 0.02 * cv2.arcLength(cnt, True)
+        approx = cv2.approxPolyDP(cnt, epsilon, True)
+        if len(approx) == 4:
+            area = cv2.contourArea(approx)
+            if area > max_area:
+                max_area = area
+                best_cnt = approx
+
+    if best_cnt is None:
+        return None
+
+    # Noktaları sırala
+    pts = best_cnt.reshape(4, 2)
+    return order_points(pts)
+
+
+def order_points(pts: np.ndarray) -> np.ndarray:
+    rect = np.zeros((4, 2), dtype="float32")
     s = pts.sum(axis=1)
     diff = np.diff(pts, axis=1)
-    rect[0] = pts[np.argmin(s)]
-    rect[2] = pts[np.argmax(s)]
-    rect[1] = pts[np.argmin(diff)]
-    rect[3] = pts[np.argmax(diff)]
+    rect[0] = pts[np.argmin(s)]      # top-left
+    rect[2] = pts[np.argmax(s)]      # bottom-right
+    rect[1] = pts[np.argmin(diff)]   # top-right
+    rect[3] = pts[np.argmax(diff)]   # bottom-left
     return rect
 
 
-def _four_point_transform(image: np.ndarray, pts: np.ndarray) -> np.ndarray:
-    rect = _order_points(pts)
-    (tl, tr, br, bl) = rect
-
+def four_point_transform(image: np.ndarray, pts: np.ndarray) -> np.ndarray:
+    (tl, tr, br, bl) = pts
     widthA = np.linalg.norm(br - bl)
     widthB = np.linalg.norm(tr - tl)
-    maxWidth = int(round(max(widthA, widthB)))
+    maxWidth = int(max(widthA, widthB))
 
     heightA = np.linalg.norm(tr - br)
     heightB = np.linalg.norm(tl - bl)
-    maxHeight = int(round(max(heightA, heightB)))
+    maxHeight = int(max(heightA, heightB))
 
     dst = np.array([
         [0, 0],
         [maxWidth - 1, 0],
         [maxWidth - 1, maxHeight - 1],
-        [0, maxHeight - 1]
-    ], dtype=np.float32)
+        [0, maxHeight - 1]], dtype="float32")
 
-    M = cv2.getPerspectiveTransform(rect, dst)
-    warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight), flags=cv2.INTER_LANCZOS4)
+    M = cv2.getPerspectiveTransform(pts, dst)
+    warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight))
     return warped
+
 
 
 def _full_image_quad(image: np.ndarray) -> np.ndarray:
